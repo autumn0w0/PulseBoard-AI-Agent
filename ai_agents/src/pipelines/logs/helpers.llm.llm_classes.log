@@ -1,0 +1,36 @@
+2025-10-09 20:46:16 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:46:16 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 20:46:16 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:46:16 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 20:46:17 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024
+2025-10-09 20:46:17 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:46:52 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:46:52 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 20:46:52 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:46:52 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 20:46:53 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024
+2025-10-09 20:46:53 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:50:06 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:50:06 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 20:50:06 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:50:06 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 20:50:06 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024
+2025-10-09 20:50:06 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: 'data_analysis_prompt.jinja' not found in search path: 'D:\\projects\\PulseBoard\\backend\\ai_agents\\src\\pipelines\\..\\..\\..\\ai_agents\\prompts'
+2025-10-09 20:55:31 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:55:31 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 20:55:31 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: D:\projects\PulseBoard\backend\ai_agents\src\prompts\data_analysis_prompt.jinja
+2025-10-09 20:55:31 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 20:55:32 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024
+2025-10-09 20:55:32 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: D:\projects\PulseBoard\backend\ai_agents\src\prompts\data_analysis_prompt.jinja
+2025-10-09 20:57:11 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:57:11 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 20:57:11 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: D:\projects\PulseBoard\backend\ai_agents\src\prompts\data_analysis_prompt.jinja
+2025-10-09 20:57:11 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 20:57:12 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024
+2025-10-09 20:57:12 - ERROR - [llm_classes.py:96 - get_prompt_template()] - Template rendering failed: D:\projects\PulseBoard\backend\ai_agents\src\prompts\data_analysis_prompt.jinja
+2025-10-09 20:59:30 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 20:59:30 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 21:01:37 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: gemini/gemini-2.0-flash-lite
+2025-10-09 21:01:37 - INFO - [llm_classes.py:103 - get_gemini_llm()] - Initialized Gemini: gemini-2.0-flash-lite
+2025-10-09 21:11:36 - INFO - [llm_classes.py:53 - __init__()] - Initialized LLM: cohere/command-r-plus-08-2024
+2025-10-09 21:11:37 - INFO - [llm_classes.py:109 - get_cohere_llm()] - Initialized Cohere: command-r-plus-08-2024

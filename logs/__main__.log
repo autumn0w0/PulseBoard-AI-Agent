@@ -1,0 +1,10 @@
+2025-10-09 13:48:46 - INFO - [api.py:26 - create_user()] - Creating user with email: john.doe@example.com
+2025-10-09 13:48:47 - INFO - [api.py:38 - create_user()] - User created successfully: UID003
+2025-10-09 13:51:20 - INFO - [api.py:26 - create_user()] - Creating user with email: john.doe@example.com
+2025-10-09 13:51:20 - WARNING - [api.py:35 - create_user()] - User already exists: john.doe@example.com
+2025-10-09 13:51:54 - INFO - [api.py:26 - create_user()] - Creating user with email: johzzzzzzzzzzn.doe@example.com
+2025-10-09 13:51:54 - INFO - [api.py:44 - create_user()] - User created successfully: UID004
+2025-10-09 13:52:28 - INFO - [api.py:56 - create_project()] - Creating project for user: UID004
+2025-10-09 13:52:28 - INFO - [api.py:76 - create_project()] - Project created successfully: UID004PJ001
+2025-10-09 13:52:36 - INFO - [api.py:56 - create_project()] - Creating project for user: UID004
+2025-10-09 13:52:36 - INFO - [api.py:76 - create_project()] - Project created successfully: UID004PJ002
