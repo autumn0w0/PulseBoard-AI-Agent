@@ -1,1 +1,0 @@
-# CORS, auth, error handling
