@@ -2,7 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 
-sys.path.append("../../../")
+sys.path.append("../../")
 
 from helpers.database.connection_to_db import connect_to_mongodb
 
