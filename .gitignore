@@ -29,3 +29,6 @@ Thumbs.db
 
 # Compiled files
 *.so
+
+.__pycache__
+.pyc
