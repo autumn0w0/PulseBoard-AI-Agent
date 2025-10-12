@@ -251,7 +251,7 @@ def save_data_types(client, db_name: str, project_id: str, data_types: List[Dict
         return False
 
 
-def run(project_id: str, use_pandas: bool = True, master_db_name: str = "master") -> bool:
+def run_dtf(project_id: str, use_pandas: bool = True, master_db_name: str = "master") -> bool:
     """
     Main function to analyze and save data types for a project.
     
@@ -340,7 +340,7 @@ if __name__ == "__main__":
     project_id = sys.argv[1]
     use_pandas = "--basic" not in sys.argv
     
-    success = run(project_id, use_pandas=use_pandas)
+    success = run_dtf(project_id, use_pandas=use_pandas)
     
     if not success:
         sys.exit(1)
