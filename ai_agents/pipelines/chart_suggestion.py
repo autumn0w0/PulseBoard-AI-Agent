@@ -66,17 +66,25 @@ def build_llm_prompt(attributes):
         attributes_summary.append(attr_info)
     
     prompt = f"""
-You are a data visualization expert. Analyze the following dataset attributes and suggest the most appropriate charts for visualization.
+You are a data visualization expert. Analyze the following dataset attributes and suggest ALL possible meaningful charts for visualization.
 
 DATASET ATTRIBUTES:
 {json.dumps(attributes_summary, indent=2)}
 
 TASK:
-Suggest 5-8 different chart visualizations that would be most insightful for this dataset. For each chart, provide:
+Suggest 10-15 different chart visualizations covering all possibilities for this dataset. Categorize each chart as either:
+- **"direct"**: Essential charts that should appear directly on the dashboard (top 5-7 most important)
+- **"suggestion"**: Additional useful charts that users can optionally add
+
+For each chart, provide:
 
 1. **Chart Type**: Specify the type (bar_chart, line_chart, pie_chart, scatter_plot, heatmap, geo_map, histogram, box_plot, etc.)
 
-2. **Configuration**: Based on chart type, provide appropriate fields with calculations embedded directly:
+2. **Display Mode**: Set as "direct" or "suggestion"
+   - "direct" for core insights (overview metrics, key distributions, primary trends)
+   - "suggestion" for deeper analysis, specific use cases, or alternative views
+
+3. **Configuration**: Based on chart type, provide appropriate fields with calculations embedded directly:
    
    - For **bar_chart/line_chart**:
      * x_axis: attribute name (e.g., "type", "genre", "country")
@@ -109,9 +117,11 @@ Suggest 5-8 different chart visualizations that would be most insightful for thi
      * category: attribute name (e.g., "type", "genre")
      * value: attribute name (e.g., "duration", "rating")
 
-3. **Title**: A descriptive title for the chart
+4. **Title**: A descriptive title for the chart
 
-4. **Description**: Brief explanation of insights this chart would reveal
+5. **Description**: Brief explanation of insights this chart would reveal
+
+6. **Priority**: Number 1-5 (1 = highest priority, only for "direct" charts)
 
 CALCULATION SYNTAX:
 - count(attribute) - Count occurrences of attribute
@@ -126,6 +136,8 @@ RESPONSE FORMAT (JSON array):
 [
   {{
     "chart_type": "bar_chart",
+    "display_mode": "direct",
+    "priority": 1,
     "title": "Content Count by Type",
     "description": "Shows the number of Movies and TV Shows in the dataset",
     "config": {{
@@ -135,6 +147,8 @@ RESPONSE FORMAT (JSON array):
   }},
   {{
     "chart_type": "pie_chart",
+    "display_mode": "direct",
+    "priority": 2,
     "title": "Distribution by Rating",
     "description": "Displays the proportion of content by rating category",
     "config": {{
@@ -144,6 +158,8 @@ RESPONSE FORMAT (JSON array):
   }},
   {{
     "chart_type": "line_chart",
+    "display_mode": "direct",
+    "priority": 3,
     "title": "Content Released Over Years",
     "description": "Trend of content releases by year",
     "config": {{
@@ -153,6 +169,8 @@ RESPONSE FORMAT (JSON array):
   }},
   {{
     "chart_type": "geo_map",
+    "display_mode": "suggestion",
+    "priority": null,
     "title": "Content Distribution by Country",
     "description": "Geographic visualization of content origins",
     "config": {{
@@ -160,13 +178,39 @@ RESPONSE FORMAT (JSON array):
       "value_field": "count(country)",
       "map_type": "choropleth"
     }}
+  }},
+  {{
+    "chart_type": "scatter_plot",
+    "display_mode": "suggestion",
+    "priority": null,
+    "title": "Rating vs Duration Analysis",
+    "description": "Correlation between content duration and ratings",
+    "config": {{
+      "x_axis": "duration",
+      "y_axis": "rating"
+    }}
   }}
 ]
 
+GUIDELINES FOR CATEGORIZATION:
+- "direct" charts (5-7 total):
+  * Overall summary/count charts
+  * Primary distributions (pie/bar charts of main categories)
+  * Key trends over time
+  * Most important KPIs
+  
+- "suggestion" charts (remaining):
+  * Detailed breakdowns
+  * Geographic maps
+  * Correlation analyses
+  * Box plots and histograms
+  * Advanced analytical views
+
 IMPORTANT:
 - Embed calculations DIRECTLY into the axis/value fields (e.g., y_axis: "count(type)" NOT y_axis: "count")
+- Suggest ALL possible meaningful charts - aim for completeness
 - Only suggest charts that make sense given the available attributes and their data types
-- Prioritize charts that would provide the most business value and insights
+- Prioritize "direct" charts that provide immediate business value
 - Ensure attribute names exactly match those provided
 - Return ONLY the JSON array, no additional text
 """
@@ -210,6 +254,13 @@ def get_chart_suggestions(project_id):
         try:
             suggestions = json.loads(response_text)
             logger.info(f"Generated {len(suggestions)} chart suggestions")
+            
+            # Separate and log direct vs suggestion charts
+            direct_charts = [s for s in suggestions if s.get('display_mode') == 'direct']
+            suggestion_charts = [s for s in suggestions if s.get('display_mode') == 'suggestion']
+            logger.info(f"  - Direct charts: {len(direct_charts)}")
+            logger.info(f"  - Suggestion charts: {len(suggestion_charts)}")
+            
             return suggestions
         except json.JSONDecodeError as json_err:
             logger.error(f"Failed to parse LLM response as JSON: {json_err}")
@@ -220,6 +271,13 @@ def get_chart_suggestions(project_id):
                 json_str = response_text[start_idx:end_idx]
                 suggestions = json.loads(json_str)
                 logger.info(f"Successfully extracted JSON from response")
+                
+                # Log categorization
+                direct_charts = [s for s in suggestions if s.get('display_mode') == 'direct']
+                suggestion_charts = [s for s in suggestions if s.get('display_mode') == 'suggestion']
+                logger.info(f"  - Direct charts: {len(direct_charts)}")
+                logger.info(f"  - Suggestion charts: {len(suggestion_charts)}")
+                
                 return suggestions
             raise
     
@@ -290,16 +348,31 @@ def run_cs(project_id):
         # Get chart suggestions
         suggestions = get_chart_suggestions(project_id)
         
+        # Separate direct and suggestion charts
+        direct_charts = [s for s in suggestions if s.get('display_mode') == 'direct']
+        suggestion_charts = [s for s in suggestions if s.get('display_mode') == 'suggestion']
+        
         # Print suggestions
         print("\n" + "="*80)
         print(f"CHART SUGGESTIONS FOR PROJECT: {project_id}")
         print("="*80)
-        print(json.dumps(suggestions, indent=2))
+        
+        print(f"\n{'='*80}")
+        print(f"DIRECT CHARTS (Auto-added to Dashboard): {len(direct_charts)}")
+        print(f"{'='*80}")
+        print(json.dumps(direct_charts, indent=2))
+        
+        print(f"\n{'='*80}")
+        print(f"SUGGESTED CHARTS (Optional): {len(suggestion_charts)}")
+        print(f"{'='*80}")
+        print(json.dumps(suggestion_charts, indent=2))
         
         # Save to database
         collection_name = save_suggestions_to_db(project_id, suggestions)
         print(f"\n✓ Suggestions saved to collection: {collection_name}")
         print(f"✓ Total suggestions generated: {len(suggestions)}")
+        print(f"  - Direct charts: {len(direct_charts)}")
+        print(f"  - Suggestion charts: {len(suggestion_charts)}")
         
         logger.info(f"Successfully completed chart suggestion generation for {project_id}")
         return suggestions
