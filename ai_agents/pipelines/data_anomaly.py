@@ -63,6 +63,27 @@ def get_project_collections(project_id: str) -> tuple:
     return mongo_client, data_types_coll, cleaned_dt_coll
 
 
+def is_time_related_attribute(attribute: str) -> bool:
+    """
+    Check if an attribute name suggests it's time-related.
+    
+    Args:
+        attribute: The attribute name
+    
+    Returns:
+        True if the attribute appears to be time-related
+    """
+    time_keywords = [
+        'year', 'yr', 'month', 'mon', 'day', 'date', 'time', 'datetime',
+        'timestamp', 'created', 'updated', 'modified', 'scheduled',
+        'start', 'end', 'period', 'duration', 'deadline', 'expiry',
+        'dob', 'birth', 'age', 'hour', 'minute', 'second'
+    ]
+    
+    attribute_lower = attribute.lower()
+    return any(keyword in attribute_lower for keyword in time_keywords)
+
+
 def analyze_data_type_with_llm(
     attribute: str,
     declared_data_type: str,
@@ -87,25 +108,30 @@ Sample Values: {samples}
 
 Determine the ACTUAL/CORRECT data type for these samples.
 
-IMPORTANT RULES:
-- If the attribute name suggests a temporal meaning (e.g., "year", "month", "date") AND the values are numeric years (like 2014, 2015, 2020), classify it as "datetime" NOT "integer"
-- Be context-aware: consider both the attribute name and the values
+CRITICAL RULES:
+1. NEVER use "array" as a data type. If you see array-like data, classify it by the type of elements it contains (e.g., if array contains numbers, use "integer" or "float")
+2. ANY time-related data MUST be classified as "datetime". This includes:
+   - Years (2014, 2015, 2020, etc.)
+   - Dates (2024-01-01, 01/15/2023, etc.)
+   - Times (14:30:00, 9:00 AM, etc.)
+   - Timestamps
+   - Any attribute with temporal names (year, month, date, time, created, updated, etc.)
+3. If attribute name suggests temporal meaning (e.g., "year", "month", "date", "timestamp"), it MUST be "datetime"
 
-Consider these data types:
+Consider these data types ONLY (array is NOT allowed):
 - string: General text data
-- integer: Whole numbers (but NOT years/dates)
-- float: Decimal numbers
+- integer: Whole numbers (EXCEPT years/dates - those are datetime)
+- float: Decimal numbers (EXCEPT if time-related)
 - boolean: True/False values
-- datetime: Date and/or time values, includes year columns
-- date: Date only (no time)
-- time: Time only (no date)
+- datetime: ALL date/time values, years, months, timestamps, or any time-related data
+- date: Date only (no time) - but prefer datetime for consistency
+- time: Time only (no date) - but prefer datetime for consistency
 - location: Geographic data (addresses, cities, countries, coordinates)
 - email: Email addresses
 - phone: Phone numbers
 - url: Web URLs
 - currency: Monetary values
 - percentage: Percentage values
-- array: Lists of values
 
 Respond ONLY with a JSON object in this exact format (no markdown, no extra text):
 {{
@@ -114,12 +140,11 @@ Respond ONLY with a JSON object in this exact format (no markdown, no extra text
 
     system_prompt = """You are a data type classification expert. 
 Analyze data samples and return ONLY a JSON object with the correct data_type.
-Be especially attentive to:
-- Year columns: If attribute name contains "year", "yr", or similar AND values are years like 2014, 2015 -> use "datetime"
-- Geographic data (addresses, cities, countries, coordinates) -> use "location"
-- Temporal data: dates without time -> "date", dates with time -> "datetime"
-- Numeric vs string distinctions
-- Special formats (emails, phones, URLs)
+
+CRITICAL REQUIREMENTS:
+1. NEVER return "array" as a data type - classify arrays by their content type
+2. ALL time-related data (years, dates, times, timestamps) MUST be classified as "datetime"
+3. If attribute name contains time-related words (year, date, time, month, day, created, updated, etc.), classify as "datetime"
 
 Return ONLY valid JSON, no markdown formatting, no explanations."""
 
@@ -162,15 +187,46 @@ Return ONLY valid JSON, no markdown formatting, no explanations."""
         if "data_type" not in result:
             raise ValueError("Response missing 'data_type' field")
         
+        # Post-processing: Enforce rules
+        data_type = result["data_type"]
+        
+        # Rule 1: No arrays allowed
+        if data_type == "array":
+            logger.warning(f"LLM returned 'array' for {attribute}, defaulting to 'string'")
+            data_type = "string"
+        
+        # Rule 2: Force datetime for time-related attributes
+        if is_time_related_attribute(attribute):
+            if data_type != "datetime":
+                logger.info(f"Forcing datetime for time-related attribute: {attribute} (was {data_type})")
+                data_type = "datetime"
+        
+        result["data_type"] = data_type
         return result
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM response as JSON: {e}")
         logger.error(f"Response was: {response_text[:500]}")
-        return {"data_type": declared_data_type}
+        
+        # Fallback with rules applied
+        fallback_type = declared_data_type
+        if fallback_type == "array":
+            fallback_type = "string"
+        if is_time_related_attribute(attribute):
+            fallback_type = "datetime"
+        
+        return {"data_type": fallback_type}
     except Exception as e:
         logger.error(f"Error calling LLM: {e}")
-        return {"data_type": declared_data_type}
+        
+        # Fallback with rules applied
+        fallback_type = declared_data_type
+        if fallback_type == "array":
+            fallback_type = "string"
+        if is_time_related_attribute(attribute):
+            fallback_type = "datetime"
+        
+        return {"data_type": fallback_type}
 
 
 def get_actual_data_samples(
@@ -306,6 +362,16 @@ def analyze_and_correct_data_types(
         analysis = analyze_data_type_with_llm(attribute, declared_data_type, samples)
         
         corrected_data_type = analysis.get("data_type", declared_data_type)
+        
+        # Final validation: ensure no arrays and time-related are datetime
+        if corrected_data_type == "array":
+            logger.warning(f"Correcting 'array' to 'string' for {attribute}")
+            corrected_data_type = "string"
+        
+        if is_time_related_attribute(attribute) and corrected_data_type != "datetime":
+            logger.info(f"Forcing datetime for time-related attribute: {attribute}")
+            corrected_data_type = "datetime"
+        
         is_different = corrected_data_type != declared_data_type
         
         # Create corrected document (exclude _id from source)
