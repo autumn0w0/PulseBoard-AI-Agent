@@ -1,6 +1,0 @@
-2025-10-13 17:02:17 - INFO - [call_llm.py:51 - call_llm()] - Attempting primary LLM call...
-2025-10-13 17:02:21 - INFO - [call_llm.py:187 - _call_llm_with_config()] - LLM call took 4.3735 seconds
-2025-10-13 17:02:21 - INFO - [call_llm.py:64 - call_llm()] - ✅ Primary LLM call successful (took 4.3761 seconds)
-2025-10-13 17:08:14 - INFO - [call_llm.py:51 - call_llm()] - Attempting primary LLM call...
-2025-10-13 17:08:19 - INFO - [call_llm.py:187 - _call_llm_with_config()] - LLM call took 4.3117 seconds
-2025-10-13 17:08:19 - INFO - [call_llm.py:64 - call_llm()] - ✅ Primary LLM call successful (took 4.3138 seconds)
