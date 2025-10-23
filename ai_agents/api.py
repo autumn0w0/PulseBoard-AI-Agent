@@ -2,8 +2,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import sys
 import os
-from ai_agents.src.registration.user_creation import run_user_creation
-from ai_agents.src.registration.project_creation import run_project_creation
+from ai_agents.registration.user_creation import run_user_creation
+from ai_agents.registration.project_creation import run_project_creation
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
