@@ -20,7 +20,7 @@ class ProjectCreateRequest(BaseModel):
     project_name: str
     domain: str
 
-@app.post("/api/users/create")
+@app.post("/users/create")
 async def create_user(user_data: UserCreateRequest):
     try:
         logger.info(f"Creating user with email: {user_data.email}")
@@ -50,7 +50,7 @@ async def create_user(user_data: UserCreateRequest):
         logger.error(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/projects/create")
+@app.post("/projects/create")
 async def create_project(project_data: ProjectCreateRequest):
     try:
         logger.info(f"Creating project for user: {project_data.user_id}")
