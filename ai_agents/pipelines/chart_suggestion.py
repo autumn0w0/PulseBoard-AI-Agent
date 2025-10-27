@@ -121,7 +121,7 @@ For each chart, provide:
 
 5. **Description**: Brief explanation of insights this chart would reveal
 
-6. **Priority**: Number 1-5 (1 = highest priority, only for "direct" charts)
+6. **Priority**: Number 1-6 (1 = highest priority, only for "direct" charts)
 
 CALCULATION SYNTAX:
 - count(attribute) - Count occurrences of attribute
@@ -193,7 +193,7 @@ RESPONSE FORMAT (JSON array):
 ]
 
 GUIDELINES FOR CATEGORIZATION:
-- "direct" charts (5-7 total):
+- "direct" charts (6 total):
   * Overall summary/count charts
   * Primary distributions (pie/bar charts of main categories)
   * Key trends over time

@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from bson import ObjectId
 import sys
 import os
 from ai_agents.registration.user_creation import run_user_creation
 from ai_agents.registration.project_creation import run_project_creation
+from ai_agents.pipelines.data_type_finding import run_dtf
+from ai_agents.pipelines.data_anomaly import run_cdt
+from ai_agents.pipelines.chart_suggestion import run_cs
+from ai_agents.pipelines.data_cleaning import run_chart_pipeline
 from helpers.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +24,22 @@ class ProjectCreateRequest(BaseModel):
     user_id: str
     project_name: str
     domain: str
+
+class DataPipelineRequest(BaseModel):
+    project_id: str
+
+def convert_objectid_to_str(data):
+    """
+    Recursively convert all ObjectId instances to strings in nested data structures
+    """
+    if isinstance(data, dict):
+        return {key: convert_objectid_to_str(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [convert_objectid_to_str(item) for item in data]
+    elif isinstance(data, ObjectId):
+        return str(data)
+    else:
+        return data
 
 @app.post("/users/create")
 async def create_user(user_data: UserCreateRequest):
@@ -80,6 +101,79 @@ async def create_project(project_data: ProjectCreateRequest):
         raise
     except Exception as e:
         logger.error(f"Error creating project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/data/process-pipeline")
+async def process_data_pipeline(pipeline_data: DataPipelineRequest):
+    """
+    Run the complete data processing pipeline:
+    1. Data Type Finding (run_dtf)
+    2. Data Anomaly Detection (run_cdt)
+    3. Chart Suggestion (run_cs)
+    4. Data Cleaning/Chart Pipeline (run_chart_pipeline)
+    """
+    try:
+        project_id = pipeline_data.project_id
+        logger.info(f"Starting data pipeline for project: {project_id}")
+        
+        results = {}
+        
+        # Step 1: Run Data Type Finding
+        logger.info(f"Step 1: Running data type finding for project {project_id}")
+        try:
+            dtf_result = run_dtf(project_id)
+            results["data_type_finding"] = dtf_result
+            logger.info(f"Data type finding completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in data type finding: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data type finding failed: {str(e)}")
+        
+        # Step 2: Run Data Anomaly Detection
+        logger.info(f"Step 2: Running data anomaly detection for project {project_id}")
+        try:
+            cdt_result = run_cdt(project_id)
+            results["data_anomaly"] = cdt_result
+            logger.info(f"Data anomaly detection completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in data anomaly detection: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data anomaly detection failed: {str(e)}")
+        
+        # Step 3: Run Chart Suggestion
+        logger.info(f"Step 3: Running chart suggestion for project {project_id}")
+        try:
+            cs_result = run_cs(project_id)
+            results["chart_suggestion"] = cs_result
+            logger.info(f"Chart suggestion completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in chart suggestion: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Chart suggestion failed: {str(e)}")
+        
+        # Step 4: Run Chart Pipeline
+        logger.info(f"Step 4: Running chart pipeline for project {project_id}")
+        try:
+            chart_pipeline_result = run_chart_pipeline(project_id)
+            results["chart_pipeline"] = chart_pipeline_result
+            logger.info(f"Chart pipeline completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in chart pipeline: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Chart pipeline failed: {str(e)}")
+        
+        logger.info(f"Data pipeline completed successfully for project {project_id}")
+        
+        # Convert all ObjectId instances to strings before returning
+        response = {
+            "status": "success",
+            "project_id": project_id,
+            "results": convert_objectid_to_str(results),
+            "message": "Data pipeline executed successfully"
+        }
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in data pipeline: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
