@@ -170,7 +170,7 @@ RESPONSE FORMAT (JSON array):
   {{
     "chart_type": "geo_map",
     "display_mode": "suggestion",
-    "priority": null,
+    "priority": 4,
     "title": "Content Distribution by Country",
     "description": "Geographic visualization of content origins",
     "config": {{
