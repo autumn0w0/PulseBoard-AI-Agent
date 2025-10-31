@@ -124,10 +124,9 @@ def create_text_from_cleaned_dt(record: Dict) -> str:
 def create_text_from_cleaned_data(record: Dict) -> str:
     """
     Converts chart-level cleaned data into text for embeddings.
-    Generates both meta_text (chart meaning) and data_text (chart content summary).
+    Only includes metadata, NOT the actual data field.
     """
     meta_parts = []
-    data_parts = []
 
     if "chart_title" in record:
         meta_parts.append(f"Chart Title: {record['chart_title']}")
@@ -138,20 +137,12 @@ def create_text_from_cleaned_data(record: Dict) -> str:
     if "config" in record:
         meta_parts.append(f"Config: {json.dumps(record['config'])}")
 
-    if "data" in record and isinstance(record["data"], list):
-        for row in record["data"][:10]:
-            if isinstance(row, dict):
-                data_parts.append(", ".join([f"{k}: {v}" for k, v in row.items()]))
-
-    meta_text = "\n".join(meta_parts)
-    data_text = "\n".join(data_parts)
-
-    return meta_text + "\n\n" + data_text
+    return "\n".join(meta_parts)
 
 
 def vectorize_and_store(client, db_name: str, project_id: str, text_records: List[tuple], source_type: str) -> int:
     """
-    Sends text to Google's embedding model and stores results in the vectors collection.
+    Sends text to Google's embedding model and stores results in separate vector collections.
     
     Args:
         client: MongoDB client
@@ -164,11 +155,18 @@ def vectorize_and_store(client, db_name: str, project_id: str, text_records: Lis
         Number of successfully vectorized records
     """
     db = client[db_name]
-    vector_collection = f"{project_id}_vectors"
+    
+    # Create separate collection names based on source type
+    if source_type == "cleaned_dt":
+        vector_collection = f"{project_id}_cleaned_dt_vectorized"
+    else:  # cleaned_data
+        vector_collection = f"{project_id}_cleaned_data_vectorized"
+    
     vector_db = db[vector_collection]
 
     logger.info(f"Vectorizing {len(text_records)} documents from {source_type}")
     logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
+    logger.info(f"Storing in collection: {vector_collection}")
     
     success_count = 0
 
@@ -181,12 +179,10 @@ def vectorize_and_store(client, db_name: str, project_id: str, text_records: Lis
             # Generate embedding using Google's embedding model
             vector = generate_embedding(text_block)
 
-            # Store in single vectors collection with source_type to distinguish
+            # Store only essential fields: project_id, source_id, and vector
             vector_db.insert_one({
                 "project_id": project_id,
                 "source_id": rec_id,
-                "source_type": source_type,
-                "text": text_block,
                 "vector": vector
             })
             
@@ -289,19 +285,20 @@ def run_v(project_id: str, master_db_name: str = "master") -> Dict:
             "database": db_name,
             "cleaned_dt_count": len(cleaned_dt_texts),
             "cleaned_dt_vectorized": dt_success,
+            "cleaned_dt_collection": f"{project_id}_cleaned_dt_vectorized",
             "cleaned_data_count": len(cleaned_data_texts),
             "cleaned_data_vectorized": data_success,
-            "total_vectorized": dt_success + data_success,
-            "vector_collection": f"{project_id}_vectors"
+            "cleaned_data_collection": f"{project_id}_cleaned_data_vectorized",
+            "total_vectorized": dt_success + data_success
         }
 
         logger.info("🎯 All vectorization completed successfully!")
         logger.info(f"Summary:\n{json.dumps(summary, indent=2)}")
         
         print(f"\n✓ Successfully processed project '{project_id}'")
-        print(f"  - Vectorized {dt_success}/{len(cleaned_dt_texts)} cleaned_dt records")
-        print(f"  - Vectorized {data_success}/{len(cleaned_data_texts)} cleaned_data records")
-        print(f"  - Total: {dt_success + data_success} vectors stored in '{summary['vector_collection']}'")
+        print(f"  - Vectorized {dt_success}/{len(cleaned_dt_texts)} cleaned_dt records → {project_id}_cleaned_dt_vectorized")
+        print(f"  - Vectorized {data_success}/{len(cleaned_data_texts)} cleaned_data records → {project_id}_cleaned_data_vectorized")
+        print(f"  - Total: {dt_success + data_success} vectors created")
         
         return summary
 
