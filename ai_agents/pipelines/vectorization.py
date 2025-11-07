@@ -104,9 +104,9 @@ def check_user_and_project_exist(client, project_id: str, master_db_name: str = 
     }
 
 
-def create_text_from_cleaned_dt(record: Dict) -> str:
+def create_text_from_weaviate_cdt(record: Dict) -> str:
     """
-    Converts cleaned_dt record into meaningful text for embeddings.
+    Converts weaviate_cdt record into meaningful text for embeddings.
     """
     parts = []
     if "attribute" in record:
@@ -121,9 +121,9 @@ def create_text_from_cleaned_dt(record: Dict) -> str:
     return "\n".join(parts)
 
 
-def create_text_from_cleaned_data(record: Dict) -> str:
+def create_text_from_weaviate_cd(record: Dict) -> str:
     """
-    Converts chart-level cleaned data into text for embeddings.
+    Converts weaviate_cd record into text for embeddings.
     Only includes metadata, NOT the actual data field.
     """
     meta_parts = []
@@ -149,7 +149,7 @@ def vectorize_and_store(client, db_name: str, project_id: str, text_records: Lis
         db_name: Database name
         project_id: The project identifier
         text_records: List of tuples (record_id, text_block)
-        source_type: Either 'cleaned_dt' or 'cleaned_data'
+        source_type: Either 'weaviate_cdt' or 'weaviate_cd'
         
     Returns:
         Number of successfully vectorized records
@@ -157,10 +157,10 @@ def vectorize_and_store(client, db_name: str, project_id: str, text_records: Lis
     db = client[db_name]
     
     # Create separate collection names based on source type
-    if source_type == "cleaned_dt":
-        vector_collection = f"{project_id}_cleaned_dt_vectorized"
-    else:  # cleaned_data
-        vector_collection = f"{project_id}_cleaned_data_vectorized"
+    if source_type == "weaviate_cdt":
+        vector_collection = f"{project_id}_weaviate_vectors_cdt"
+    else:  # weaviate_cd
+        vector_collection = f"{project_id}_weaviate_vectors_cd"
     
     vector_db = db[vector_collection]
 
@@ -199,7 +199,7 @@ def vectorize_and_store(client, db_name: str, project_id: str, text_records: Lis
 def run_v(project_id: str, master_db_name: str = "master") -> Dict:
     """
     Main function to vectorize all data for a given project.
-    Stores all vectors in {project_id}_vectors collection under project's database.
+    Stores vectors in {project_id}_weaviate_vectors_cd and {project_id}_weaviate_vectors_cdt collections.
     
     Args:
         project_id: The project identifier (e.g., "UID001PJ001")
@@ -232,73 +232,73 @@ def run_v(project_id: str, master_db_name: str = "master") -> Dict:
         
         db = client[db_name]
         
-        # Define collection names
-        cleaned_dt_coll = f"{project_id}_cleaned_dt"
-        cleaned_data_coll = f"{project_id}_cleaned_data"
+        # Define collection names for Weaviate collections
+        weaviate_cdt_coll = f"{project_id}_weaviate_cdt"
+        weaviate_cd_coll = f"{project_id}_weaviate_cd"
         
         # Check if collections exist
         existing_collections = db.list_collection_names()
         
-        if cleaned_dt_coll not in existing_collections:
-            logger.warning(f"Collection '{cleaned_dt_coll}' does not exist")
+        if weaviate_cdt_coll not in existing_collections:
+            logger.warning(f"Collection '{weaviate_cdt_coll}' does not exist")
         
-        if cleaned_data_coll not in existing_collections:
-            logger.warning(f"Collection '{cleaned_data_coll}' does not exist")
+        if weaviate_cd_coll not in existing_collections:
+            logger.warning(f"Collection '{weaviate_cd_coll}' does not exist")
 
         # Fetch records from both collections
-        logger.info(f"Fetching records from {cleaned_dt_coll}")
-        cleaned_dt_records = list(db[cleaned_dt_coll].find()) if cleaned_dt_coll in existing_collections else []
-        logger.info(f"Found {len(cleaned_dt_records)} records in {cleaned_dt_coll}")
+        logger.info(f"Fetching records from {weaviate_cdt_coll}")
+        weaviate_cdt_records = list(db[weaviate_cdt_coll].find()) if weaviate_cdt_coll in existing_collections else []
+        logger.info(f"Found {len(weaviate_cdt_records)} records in {weaviate_cdt_coll}")
 
-        logger.info(f"Fetching records from {cleaned_data_coll}")
-        cleaned_data_records = list(db[cleaned_data_coll].find()) if cleaned_data_coll in existing_collections else []
-        logger.info(f"Found {len(cleaned_data_records)} records in {cleaned_data_coll}")
+        logger.info(f"Fetching records from {weaviate_cd_coll}")
+        weaviate_cd_records = list(db[weaviate_cd_coll].find()) if weaviate_cd_coll in existing_collections else []
+        logger.info(f"Found {len(weaviate_cd_records)} records in {weaviate_cd_coll}")
 
-        if not cleaned_dt_records and not cleaned_data_records:
+        if not weaviate_cdt_records and not weaviate_cd_records:
             logger.error("No data found in either collection")
             return {"success": False, "error": "No data found to vectorize"}
 
-        # --- Process cleaned_dt records ---
-        cleaned_dt_texts = []
-        for rec in cleaned_dt_records:
-            text_block = create_text_from_cleaned_dt(rec)
-            cleaned_dt_texts.append((str(rec["_id"]), text_block))
+        # --- Process weaviate_cdt records ---
+        weaviate_cdt_texts = []
+        for rec in weaviate_cdt_records:
+            text_block = create_text_from_weaviate_cdt(rec)
+            weaviate_cdt_texts.append((str(rec["_id"]), text_block))
 
-        dt_success = 0
-        if cleaned_dt_texts:
-            dt_success = vectorize_and_store(client, db_name, project_id, cleaned_dt_texts, "cleaned_dt")
+        cdt_success = 0
+        if weaviate_cdt_texts:
+            cdt_success = vectorize_and_store(client, db_name, project_id, weaviate_cdt_texts, "weaviate_cdt")
 
-        # --- Process cleaned_data (charts) records ---
-        cleaned_data_texts = []
-        for rec in cleaned_data_records:
-            text_block = create_text_from_cleaned_data(rec)
-            cleaned_data_texts.append((str(rec["_id"]), text_block))
+        # --- Process weaviate_cd records ---
+        weaviate_cd_texts = []
+        for rec in weaviate_cd_records:
+            text_block = create_text_from_weaviate_cd(rec)
+            weaviate_cd_texts.append((str(rec["_id"]), text_block))
 
-        data_success = 0
-        if cleaned_data_texts:
-            data_success = vectorize_and_store(client, db_name, project_id, cleaned_data_texts, "cleaned_data")
+        cd_success = 0
+        if weaviate_cd_texts:
+            cd_success = vectorize_and_store(client, db_name, project_id, weaviate_cd_texts, "weaviate_cd")
 
         # Summary
         summary = {
             "success": True,
             "project_id": project_id,
             "database": db_name,
-            "cleaned_dt_count": len(cleaned_dt_texts),
-            "cleaned_dt_vectorized": dt_success,
-            "cleaned_dt_collection": f"{project_id}_cleaned_dt_vectorized",
-            "cleaned_data_count": len(cleaned_data_texts),
-            "cleaned_data_vectorized": data_success,
-            "cleaned_data_collection": f"{project_id}_cleaned_data_vectorized",
-            "total_vectorized": dt_success + data_success
+            "weaviate_cdt_count": len(weaviate_cdt_texts),
+            "weaviate_cdt_vectorized": cdt_success,
+            "weaviate_cdt_collection": f"{project_id}_weaviate_vectors_cdt",
+            "weaviate_cd_count": len(weaviate_cd_texts),
+            "weaviate_cd_vectorized": cd_success,
+            "weaviate_cd_collection": f"{project_id}_weaviate_vectors_cd",
+            "total_vectorized": cdt_success + cd_success
         }
 
         logger.info("🎯 All vectorization completed successfully!")
         logger.info(f"Summary:\n{json.dumps(summary, indent=2)}")
         
         print(f"\n✓ Successfully processed project '{project_id}'")
-        print(f"  - Vectorized {dt_success}/{len(cleaned_dt_texts)} cleaned_dt records → {project_id}_cleaned_dt_vectorized")
-        print(f"  - Vectorized {data_success}/{len(cleaned_data_texts)} cleaned_data records → {project_id}_cleaned_data_vectorized")
-        print(f"  - Total: {dt_success + data_success} vectors created")
+        print(f"  - Vectorized {cdt_success}/{len(weaviate_cdt_texts)} weaviate_cdt records → {project_id}_weaviate_vectors_cdt")
+        print(f"  - Vectorized {cd_success}/{len(weaviate_cd_texts)} weaviate_cd records → {project_id}_weaviate_vectors_cd")
+        print(f"  - Total: {cdt_success + cd_success} vectors created")
         
         return summary
 
