@@ -184,11 +184,41 @@ def convert_to_weaviate_ready(project_id):
             client.close()
             logger.info("MongoDB connection closed.")
 
+def run_dfw(project_id):
+    """
+    Run the complete Data-For-Weaviate (DFW) pipeline.
+    
+    Args:
+        project_id (str): The project ID to process
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        logger.info(f"🚀 Starting DFW pipeline for project: {project_id}")
+        
+        # Validate project_id format
+        if not project_id or "PJ" not in project_id:
+            logger.error(f"Invalid project_id format: {project_id}")
+            return False
+        
+        # Run the conversion to Weaviate-ready format
+        logger.info("Step 1: Converting data to Weaviate-ready format...")
+        convert_to_weaviate_ready(project_id)
+        
+        logger.info(f"✅ DFW pipeline completed successfully for {project_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ DFW pipeline failed for {project_id}: {e}", exc_info=True)
+        return False
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python convert_to_weaviate_ready.py <project_id>")
+        print("Usage: python run_dfw.py <project_id>")
         sys.exit(1)
-
+    
     project_id = sys.argv[1]
-    convert_to_weaviate_ready(project_id)
+    success = run_dfw(project_id)
+    sys.exit(0 if success else 1)

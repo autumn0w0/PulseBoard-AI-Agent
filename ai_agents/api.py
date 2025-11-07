@@ -10,6 +10,9 @@ from ai_agents.pipelines.data_anomaly import run_cdt
 from ai_agents.pipelines.chart_suggestion import run_cs
 from ai_agents.pipelines.data_cleaning import run_chart_pipeline
 from helpers.logger import get_logger
+from ai_agents.pipelines.data_flatted_weviate import run_dfw
+from ai_agents.pipelines.vectorization import run_v
+from ai_agents.pipelines.data_to_weviate import run_dtw
 
 logger = get_logger(__name__)
 
@@ -111,6 +114,9 @@ async def process_data_pipeline(pipeline_data: DataPipelineRequest):
     2. Data Anomaly Detection (run_cdt)
     3. Chart Suggestion (run_cs)
     4. Data Cleaning/Chart Pipeline (run_chart_pipeline)
+    5. Data Flattening for Weaviate (run_dfw)
+    6. Vectorization (run_v)
+    7. Data to Weaviate (run_dtw)
     """
     try:
         project_id = pipeline_data.project_id
@@ -157,6 +163,36 @@ async def process_data_pipeline(pipeline_data: DataPipelineRequest):
         except Exception as e:
             logger.error(f"Error in chart pipeline: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Chart pipeline failed: {str(e)}")
+        
+        # Step 5: Run Data Flattening for Weaviate
+        logger.info(f"Step 5: Running data flattening for Weaviate for project {project_id}")
+        try:
+            dfw_result = run_dfw(project_id)
+            results["data_flattened_weaviate"] = dfw_result
+            logger.info(f"Data flattening for Weaviate completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in data flattening for Weaviate: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data flattening for Weaviate failed: {str(e)}")
+        
+        # Step 6: Run Vectorization
+        logger.info(f"Step 6: Running vectorization for project {project_id}")
+        try:
+            v_result = run_v(project_id)
+            results["vectorization"] = v_result
+            logger.info(f"Vectorization completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in vectorization: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Vectorization failed: {str(e)}")
+        
+        # Step 7: Run Data to Weaviate
+        logger.info(f"Step 7: Running data to Weaviate for project {project_id}")
+        try:
+            dtw_result = run_dtw(project_id)
+            results["data_to_weaviate"] = dtw_result
+            logger.info(f"Data to Weaviate completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in data to Weaviate: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Data to Weaviate failed: {str(e)}")
         
         logger.info(f"Data pipeline completed successfully for project {project_id}")
         
