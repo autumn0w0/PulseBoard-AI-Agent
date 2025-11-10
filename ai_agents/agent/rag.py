@@ -351,29 +351,17 @@ class RAGPipeline:
         if not context:
             return "No relevant information found in the dataset."
         
-        prompt = f"""You are a data analysis assistant for the user's custom dataset.
-Below is some relevant context retrieved from the user's project database.
-Use it to answer the question as accurately as possible.
-
-If the answer cannot be found in the context, say:
-"The information is not available in your dataset."
-
----
-User Question:
-{query}
-
-Context:
-{context}
----
-
-Provide a clear, human-readable answer."""
-        
         try:
-            # Use call_llm which handles primary/fallback automatically
+            # Use call_llm with Jinja template
+            # Pass template variables via context_variables parameter
             response = call_llm(
-                prompt_or_template=prompt,
-                use_template=False,  # Using raw text, not template
-                use_fallback=True    # Enable automatic fallback
+                prompt_or_template="rag.jinja",
+                use_template=True,
+                use_fallback=True,
+                context_variables={
+                    "query": query,
+                    "context": context
+                }
             )
             
             # Extract text from response (handle different response types)
@@ -386,11 +374,13 @@ Provide a clear, human-readable answer."""
             else:
                 answer = str(response)
             
-            logger.info("Generated answer using call_llm helper")
+            logger.info("Generated answer using call_llm helper with Jinja template")
             return answer.strip()
             
         except Exception as e:
             logger.error(f"Error calling LLM via call_llm helper: {e}")
+            import traceback
+            traceback.print_exc()
             return f"Error generating answer: {str(e)}"
     
     def run(self, query: str) -> str:
