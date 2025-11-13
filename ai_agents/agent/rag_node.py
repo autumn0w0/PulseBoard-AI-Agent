@@ -107,6 +107,10 @@ class RAGPipeline:
         self.db_name = self.config["db_name"]
         self.db = self.mongo_client[self.db_name]
         
+        # Extract project metadata
+        self.project_name = self.config["project_info"].get("name_of_project", "Unknown Project")
+        self.project_domain = self.config["project_info"].get("domain", "Unknown Domain")
+        
         # Connect to Weaviate
         self.weaviate_client = connect_to_weaviatedb()
         if not self.weaviate_client:
@@ -117,6 +121,7 @@ class RAGPipeline:
         self.cdt_class_name = self._get_class_name('_cdt')
         
         logger.info(f"Initialized RAG pipeline for project: {project_id}")
+        logger.info(f"Project Name: {self.project_name}, Domain: {self.project_domain}")
         logger.info(f"User ID: {self.user_id}, Database: {self.db_name}")
         logger.info(f"Weaviate collections: {self.cd_class_name}, {self.cdt_class_name}")
     
@@ -340,6 +345,7 @@ class RAGPipeline:
         """
         Combine the user's query and the retrieved context, then call LLM.
         Uses the call_llm helper which automatically handles fallback.
+        Includes project metadata for additional context.
         
         Args:
             query: User's question
@@ -353,14 +359,16 @@ class RAGPipeline:
         
         try:
             # Use call_llm with Jinja template
-            # Pass template variables via context_variables parameter
+            # Pass template variables including project metadata
             response = call_llm(
                 prompt_or_template="rag.jinja",
                 use_template=True,
                 use_fallback=True,
                 context_variables={
                     "query": query,
-                    "context": context
+                    "context": context,
+                    "project_name": self.project_name,
+                    "project_domain": self.project_domain
                 }
             )
             
@@ -394,6 +402,7 @@ class RAGPipeline:
             Final response from the pipeline
         """
         logger.info(f"Running RAG for query: {query}")
+        logger.info(f"Project context - Name: {self.project_name}, Domain: {self.project_domain}")
         
         # Retrieve context
         context = self.retrieve_context(query)
