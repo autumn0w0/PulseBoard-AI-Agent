@@ -391,7 +391,7 @@ class RAGPipeline:
         logger.info("Connections closed")
 
 
-def run_rag(project_id: str, query: str, master_db_name: str = "master") -> str:
+def run_rag_charts(project_id: str, query: str, master_db_name: str = "master") -> str:
     """
     Run RAG pipeline for a given project and query.
     
@@ -404,7 +404,7 @@ def run_rag(project_id: str, query: str, master_db_name: str = "master") -> str:
         Response from the RAG pipeline
     
     Example:
-        response = run_rag("UID001PJ001", "What are the sales trends?")
+        response = run_rag_charts("UID001PJ001", "What are the sales trends?")
     """
     pipeline = None
     try:
@@ -438,7 +438,7 @@ def main():
     project_id = sys.argv[1]
     query = sys.argv[2]
     
-    result = run_rag(project_id, query)
+    result = run_rag_charts(project_id, query)
     
     print("\n💬 RAG Response:\n")
     print(result)
