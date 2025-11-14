@@ -74,8 +74,8 @@ def check_user_and_project_exist(client, project_id: str, master_db_name: str = 
 
 class RAGPipeline:
     """
-    Retrieval-Augmented Generation pipeline for querying project data.
-    Retrieves context from Weaviate and generates answers using LLM.
+    Retrieval-Augmented Generation pipeline for querying project chart data.
+    Retrieves context from Weaviate charts collection and generates answers using LLM.
     """
     
     def __init__(self, project_id: str, master_db_name: str = "master"):
@@ -116,21 +116,20 @@ class RAGPipeline:
         if not self.weaviate_client:
             raise ConnectionError("Failed to connect to Weaviate")
         
-        # Generate Weaviate collection names
+        # Generate Weaviate collection name (charts only)
         self.cd_class_name = self._get_class_name('_cd')
-        self.cdt_class_name = self._get_class_name('_cdt')
         
         logger.info(f"Initialized RAG pipeline for project: {project_id}")
         logger.info(f"Project Name: {self.project_name}, Domain: {self.project_domain}")
         logger.info(f"User ID: {self.user_id}, Database: {self.db_name}")
-        logger.info(f"Weaviate collections: {self.cd_class_name}, {self.cdt_class_name}")
+        logger.info(f"Weaviate charts collection: {self.cd_class_name}")
     
     def _get_class_name(self, collection_suffix: str) -> str:
         """
         Generate Weaviate class name from project_id and suffix.
         
         Args:
-            collection_suffix: Either '_cd' or '_cdt'
+            collection_suffix: Collection suffix '_cd' for charts
             
         Returns:
             Weaviate class name
@@ -255,14 +254,13 @@ class RAGPipeline:
         logger.error("Failed to generate query vector with both Gemini and Cohere")
         return None
     
-    def retrieve_context(self, query: str, top_k: int = 3) -> Optional[str]:
+    def retrieve_context(self, query: str, top_k: int = 6) -> Optional[str]:
         """
-        Query both chart data and column data collections in Weaviate
-        and return the most relevant combined context.
+        Query the chart data collection in Weaviate and return relevant context.
         
         Args:
             query: User's search query
-            top_k: Number of top results to retrieve from each collection
+            top_k: Number of top results to retrieve
             
         Returns:
             Combined context text or None if no results found
@@ -297,53 +295,25 @@ class RAGPipeline:
                     chart_type = props.get("chart_type", "")
                     results.append(f"[Chart: {title}] ({chart_type})\n{text}")
                     
-                logger.info(f"Retrieved {len(response.objects)} results from {self.cd_class_name}")
+                logger.info(f"Retrieved {len(response.objects)} chart results from {self.cd_class_name}")
             else:
                 logger.warning(f"Collection {self.cd_class_name} does not exist in Weaviate")
                 
         except Exception as e:
             logger.error(f"Error retrieving from {self.cd_class_name}: {e}")
         
-        # Query column data types collection (_cdt)
-        try:
-            if self.weaviate_client.collections.exists(self.cdt_class_name):
-                cdt_collection = self.weaviate_client.collections.get(self.cdt_class_name)
-                response = cdt_collection.query.near_vector(
-                    near_vector=query_vector,
-                    limit=top_k,
-                    return_properties=[
-                        "combined_text", 
-                        "attribute", 
-                        "data_type"
-                    ]
-                )
-                
-                for obj in response.objects:
-                    props = obj.properties
-                    text = props.get("combined_text", "")
-                    attribute = props.get("attribute", "Unknown Attribute")
-                    data_type = props.get("data_type", "")
-                    results.append(f"[Attribute: {attribute}] ({data_type})\n{text}")
-                    
-                logger.info(f"Retrieved {len(response.objects)} results from {self.cdt_class_name}")
-            else:
-                logger.warning(f"Collection {self.cdt_class_name} does not exist in Weaviate")
-                
-        except Exception as e:
-            logger.error(f"Error retrieving from {self.cdt_class_name}: {e}")
-        
         # Combine results
         if not results:
-            logger.warning("No context retrieved from Weaviate")
+            logger.warning("No chart context retrieved from Weaviate")
             return None
         
         context_text = "\n\n".join(results)
-        logger.info(f"Retrieved {len(results)} total context snippets from Weaviate")
+        logger.info(f"Retrieved {len(results)} chart context snippets from Weaviate")
         return context_text
     
     def generate_answer(self, query: str, context: Optional[str]) -> str:
         """
-        Combine the user's query and the retrieved context, then call LLM.
+        Combine the user's query and the retrieved chart context, then call LLM.
         Uses the call_llm helper which automatically handles fallback.
         Includes project metadata for additional context.
         
@@ -355,13 +325,13 @@ class RAGPipeline:
             LLM-generated answer
         """
         if not context:
-            return "No relevant information found in the dataset."
+            return "No relevant chart information found in the dataset."
         
         try:
             # Use call_llm with Jinja template
             # Pass template variables including project metadata
             response = call_llm(
-                prompt_or_template="rag.jinja",
+                prompt_or_template="rag_charts.jinja",
                 use_template=True,
                 use_fallback=True,
                 context_variables={
@@ -404,7 +374,7 @@ class RAGPipeline:
         logger.info(f"Running RAG for query: {query}")
         logger.info(f"Project context - Name: {self.project_name}, Domain: {self.project_domain}")
         
-        # Retrieve context
+        # Retrieve chart context
         context = self.retrieve_context(query)
         
         # Generate answer
