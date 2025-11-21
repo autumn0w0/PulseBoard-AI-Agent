@@ -1,4 +1,3 @@
-# Logging configuration
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
@@ -10,6 +9,31 @@ load_dotenv()
 
 BASE_LOG_DIR = os.getenv("BASE_LOG_DIR", "logs")
 _initialized_loggers = set()
+
+
+class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """Custom handler that ensures rotated files have .log extension"""
+    
+    def rotation_filename(self, default_name):
+        """
+        Override to ensure rotated files end with .log
+        Changes format from 'file.log.2024-11-21' to 'file.2024-11-21.log'
+        """
+        # Split the default name to get the base and the date suffix
+        # default_name format: 'path/to/file.log.2024-11-21'
+        dir_name = os.path.dirname(default_name)
+        base_name = os.path.basename(default_name)
+        
+        # Split by '.' and rearrange
+        parts = base_name.split('.')
+        if len(parts) >= 3:  # e.g., ['filename', 'log', '2024-11-21']
+            # Rearrange to: filename.2024-11-21.log
+            name_part = parts[0]
+            date_part = '.'.join(parts[2:])  # Everything after 'log'
+            new_name = f"{name_part}.{date_part}.log"
+            return os.path.join(dir_name, new_name)
+        
+        return default_name
 
 
 def setup_logger(
@@ -74,7 +98,7 @@ def setup_logger(
         os.makedirs(log_dir, exist_ok=True)
 
     file_log_format = "%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d - %(funcName)s()] - %(message)s"
-    file_handler = TimedRotatingFileHandler(
+    file_handler = CustomTimedRotatingFileHandler(
         log_file,
         when="midnight",
         interval=1,
