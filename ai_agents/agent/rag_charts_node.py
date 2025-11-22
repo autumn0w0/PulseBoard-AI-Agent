@@ -254,6 +254,157 @@ class RAGPipeline:
         logger.error("Failed to generate query vector with both Gemini and Cohere")
         return None
     
+    def _is_counting_query(self, query: str) -> bool:
+        """
+        Detect if query is asking for count/number/overview of charts.
+        These queries need ALL charts, not just semantic matches.
+        
+        Args:
+            query: User's query string
+            
+        Returns:
+            True if it's a counting/overview query, False otherwise
+        """
+        counting_keywords = [
+            'how many', 'number of', 'count', 'total', 'how much',
+            
+            # Overview requests
+            'overview', 'summary', 'describe the charts', 'what charts',
+            'tell me about the charts', 'explain the charts', 'chart overview',
+            'show me all charts', 'available charts', 'what visualizations',
+            
+            # Listing requests
+            'all charts', 'list all', 'show all', 'give me all',
+            'what charts are', 'which charts', 'available visualizations',
+            'list charts', 'show charts', 'display all',
+            
+            # General questions
+            'what is visualized', 'what do the charts show',
+            'what kind of charts', 'what visualizations are available'
+        ]
+        
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in counting_keywords)
+    
+    def get_total_chart_count(self) -> int:
+        """
+        Get the total number of UNIQUE charts in the Weaviate collection.
+        
+        Returns:
+            Total count of unique charts
+        """
+        try:
+            if self.weaviate_client.collections.exists(self.cd_class_name):
+                cd_collection = self.weaviate_client.collections.get(self.cd_class_name)
+                
+                # Fetch all objects and count unique chart titles
+                response = cd_collection.query.fetch_objects(
+                    limit=1000,
+                    return_properties=["chart_title"]
+                )
+                
+                # Extract unique chart titles
+                unique_charts = set()
+                for obj in response.objects:
+                    chart_title = obj.properties.get("chart_title")
+                    if chart_title:
+                        unique_charts.add(chart_title)
+                
+                total_count = len(unique_charts)
+                total_documents = len(response.objects)
+                
+                logger.info(f"Total UNIQUE charts: {total_count} (from {total_documents} documents)")
+                return total_count
+            else:
+                logger.warning(f"Collection {self.cd_class_name} does not exist")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"Error getting total chart count: {e}")
+            return 0
+    
+    def get_all_chart_titles(self) -> List[str]:
+        """
+        Retrieve all UNIQUE chart titles from the Weaviate collection.
+        
+        Returns:
+            List of unique chart titles
+        """
+        try:
+            if self.weaviate_client.collections.exists(self.cd_class_name):
+                cd_collection = self.weaviate_client.collections.get(self.cd_class_name)
+                
+                # Fetch all objects with just the chart title
+                response = cd_collection.query.fetch_objects(
+                    limit=1000,
+                    return_properties=["chart_title", "chart_type"]
+                )
+                
+                # Get unique chart titles with types
+                unique_charts = {}
+                for obj in response.objects:
+                    chart_title = obj.properties.get("chart_title")
+                    chart_type = obj.properties.get("chart_type", "unknown")
+                    if chart_title and chart_title not in unique_charts:
+                        unique_charts[chart_title] = chart_type
+                
+                chart_list = [f"{title} ({ctype})" for title, ctype in sorted(unique_charts.items())]
+                logger.info(f"Retrieved {len(chart_list)} UNIQUE chart titles")
+                return chart_list
+            else:
+                logger.warning(f"Collection {self.cd_class_name} does not exist")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error retrieving chart titles: {e}")
+            return []
+    
+    def retrieve_all_charts(self) -> Optional[str]:
+        """
+        Retrieve ALL charts without semantic filtering.
+        Used for overview/counting queries.
+        
+        Returns:
+            Combined context text with all charts
+        """
+        results = []
+        
+        try:
+            if self.weaviate_client.collections.exists(self.cd_class_name):
+                cd_collection = self.weaviate_client.collections.get(self.cd_class_name)
+                
+                # Fetch all objects
+                response = cd_collection.query.fetch_objects(
+                    limit=1000,
+                    return_properties=[
+                        "combined_text", 
+                        "chart_title", 
+                        "chart_type", 
+                        "description"
+                    ]
+                )
+                
+                for obj in response.objects:
+                    props = obj.properties
+                    text = props.get("combined_text", "")
+                    title = props.get("chart_title", "Untitled Chart")
+                    chart_type = props.get("chart_type", "")
+                    results.append(f"[Chart: {title}] ({chart_type})\n{text}")
+                    
+                logger.info(f"Retrieved ALL {len(response.objects)} charts from {self.cd_class_name}")
+            else:
+                logger.warning(f"Collection {self.cd_class_name} does not exist in Weaviate")
+                
+        except Exception as e:
+            logger.error(f"Error retrieving all charts: {e}")
+        
+        if not results:
+            logger.warning("No charts retrieved from Weaviate")
+            return None
+        
+        context_text = "\n\n".join(results)
+        return context_text
+    
     def retrieve_context(self, query: str, top_k: int = 6) -> Optional[str]:
         """
         Query the chart data collection in Weaviate and return relevant context.
@@ -311,15 +462,17 @@ class RAGPipeline:
         logger.info(f"Retrieved {len(results)} chart context snippets from Weaviate")
         return context_text
     
-    def generate_answer(self, query: str, context: Optional[str]) -> str:
+    def generate_answer(self, query: str, context: Optional[str], total_charts: int, all_chart_titles: List[str] = None) -> str:
         """
         Combine the user's query and the retrieved chart context, then call LLM.
         Uses the call_llm helper which automatically handles fallback.
-        Includes project metadata for additional context.
+        Includes project metadata and chart count for additional context.
         
         Args:
             query: User's question
             context: Retrieved context from Weaviate
+            total_charts: Total number of charts in the dataset
+            all_chart_titles: List of all chart titles (optional)
             
         Returns:
             LLM-generated answer
@@ -328,8 +481,12 @@ class RAGPipeline:
             return "No relevant chart information found in the dataset."
         
         try:
+            # Prepare chart titles string
+            chart_titles_str = ""
+            if all_chart_titles:
+                chart_titles_str = ", ".join(all_chart_titles)
+            
             # Use call_llm with Jinja template
-            # Pass template variables including project metadata
             response = call_llm(
                 prompt_or_template="rag_charts.jinja",
                 use_template=True,
@@ -338,7 +495,9 @@ class RAGPipeline:
                     "query": query,
                     "context": context,
                     "project_name": self.project_name,
-                    "project_domain": self.project_domain
+                    "project_domain": self.project_domain,
+                    "total_charts": total_charts,
+                    "chart_titles": chart_titles_str
                 }
             )
             
@@ -364,6 +523,7 @@ class RAGPipeline:
     def run(self, query: str) -> str:
         """
         Complete RAG flow: retrieve + reason + respond.
+        Intelligently handles counting vs. semantic search queries.
         
         Args:
             query: User's question
@@ -374,11 +534,32 @@ class RAGPipeline:
         logger.info(f"Running RAG for query: {query}")
         logger.info(f"Project context - Name: {self.project_name}, Domain: {self.project_domain}")
         
-        # Retrieve chart context
-        context = self.retrieve_context(query)
+        # Get total chart count first (always needed for context)
+        total_charts = self.get_total_chart_count()
+        logger.info(f"📊 Total charts in collection: {total_charts}")
         
-        # Generate answer
-        response = self.generate_answer(query, context)
+        # Check if this is a counting/overview query
+        is_counting_query = self._is_counting_query(query)
+        
+        if is_counting_query:
+            logger.info("Detected counting/overview query - retrieving ALL charts")
+            
+            # Retrieve all charts for counting queries
+            context = self.retrieve_all_charts()
+            
+            # Get all chart titles for listing
+            all_chart_titles = self.get_all_chart_titles()
+            
+            # Generate answer with full context
+            response = self.generate_answer(query, context, total_charts, all_chart_titles)
+        else:
+            logger.info("Detected specific query - using semantic search")
+            
+            # Use semantic search with moderate top_k
+            context = self.retrieve_context(query, top_k=8)
+            
+            # Generate answer with semantic context
+            response = self.generate_answer(query, context, total_charts)
         
         return response
     
@@ -431,8 +612,8 @@ def main():
     Command-line entry point for the RAG pipeline.
     """
     if len(sys.argv) < 3:
-        print("Usage: python rag_pipeline.py <project_id> '<query>'")
-        print("Example: python rag_pipeline.py UID001PJ001 'What are the sales trends?'")
+        print("Usage: python rag_charts_node.py <project_id> '<query>'")
+        print("Example: python rag_charts_node.py UID001PJ001 'What are the sales trends?'")
         sys.exit(1)
 
     project_id = sys.argv[1]
