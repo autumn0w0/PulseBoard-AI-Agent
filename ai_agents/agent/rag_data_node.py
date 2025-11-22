@@ -254,6 +254,191 @@ class RAGPipeline:
         logger.error("Failed to generate query vector with both Gemini and Cohere")
         return None
     
+    def _is_counting_query(self, query: str) -> bool:
+        """
+        Detect if query is asking for count/number/overview of attributes.
+        These queries need ALL attributes, not just semantic matches.
+        
+        Args:
+            query: User's query string
+            
+        Returns:
+            True if it's a counting/overview query, False otherwise
+        """
+        counting_keywords = [
+            # Direct counting
+            'how many', 'number of', 'count', 'total', 'how much',
+            
+            # Overview requests
+            'overview', 'summary', 'describe the data', 'what is the data',
+            'tell me about the data', 'explain the data', 'data structure',
+            'dataset structure', 'describe dataset', 'explain dataset',
+            
+            # Listing requests
+            'all attributes', 'list all', 'show all', 'give me all',
+            'what attributes', 'which attributes', 'available attributes',
+            'what columns', 'which columns', 'available columns',
+            'list attributes', 'show attributes', 'list columns',
+            
+            # General questions
+            'what does this data contain', 'what is in the data',
+            'what kind of data', 'what type of data'
+        ]
+        
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in counting_keywords)
+    
+    def get_total_attribute_count(self) -> int:
+        """
+        Get the total number of UNIQUE attributes in the Weaviate collection.
+        Counts distinct attribute names, not total documents.
+        
+        Returns:
+            Total count of unique attributes
+        """
+        try:
+            if self.weaviate_client.collections.exists(self.cdt_class_name):
+                cdt_collection = self.weaviate_client.collections.get(self.cdt_class_name)
+                
+                # Fetch all objects and count unique attribute names
+                response = cdt_collection.query.fetch_objects(
+                    limit=1000,
+                    return_properties=["attribute"]
+                )
+                
+                # Extract unique attribute names
+                unique_attributes = set()
+                for obj in response.objects:
+                    attr_name = obj.properties.get("attribute")
+                    if attr_name:
+                        unique_attributes.add(attr_name)
+                
+                total_count = len(unique_attributes)
+                total_documents = len(response.objects)
+                
+                logger.info(f"Total UNIQUE attributes: {total_count} (from {total_documents} documents)")
+                return total_count
+            else:
+                logger.warning(f"Collection {self.cdt_class_name} does not exist")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"Error getting total attribute count: {e}")
+            return 0
+    
+    def get_all_attribute_names(self) -> List[str]:
+        """
+        Retrieve all UNIQUE attribute names from the Weaviate collection.
+        
+        Returns:
+            List of unique attribute names
+        """
+        try:
+            if self.weaviate_client.collections.exists(self.cdt_class_name):
+                cdt_collection = self.weaviate_client.collections.get(self.cdt_class_name)
+                
+                # Fetch all objects with just the attribute name
+                response = cdt_collection.query.fetch_objects(
+                    limit=1000,  # Set high limit to get all
+                    return_properties=["attribute"]
+                )
+                
+                # Get unique attribute names only
+                unique_attributes = set()
+                for obj in response.objects:
+                    attr_name = obj.properties.get("attribute")
+                    if attr_name:
+                        unique_attributes.add(attr_name)
+                
+                attribute_names = sorted(list(unique_attributes))  # Sort for consistent output
+                logger.info(f"Retrieved {len(attribute_names)} UNIQUE attribute names (from {len(response.objects)} documents)")
+                return attribute_names
+            else:
+                logger.warning(f"Collection {self.cdt_class_name} does not exist")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error retrieving attribute names: {e}")
+            return []
+    
+    def get_mongodb_attribute_count(self) -> int:
+        """
+        Get the number of attributes/columns from MongoDB collection.
+        This provides a cross-reference to verify Weaviate data.
+        
+        Returns:
+            Number of columns in MongoDB collection
+        """
+        try:
+            # Look for the main data collection (usually project_id)
+            collection_name = self.project_id
+            
+            if collection_name in self.db.list_collection_names():
+                collection = self.db[collection_name]
+                
+                # Get one document to count fields
+                sample_doc = collection.find_one()
+                if sample_doc:
+                    # Exclude MongoDB's _id field
+                    field_count = len([k for k in sample_doc.keys() if k != '_id'])
+                    logger.info(f"MongoDB collection '{collection_name}' has {field_count} fields")
+                    return field_count
+                else:
+                    logger.warning(f"No documents found in MongoDB collection '{collection_name}'")
+                    return 0
+            else:
+                logger.warning(f"MongoDB collection '{collection_name}' not found")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"Error getting MongoDB attribute count: {e}")
+            return 0
+    
+    def retrieve_all_attributes(self) -> Optional[str]:
+        """
+        Retrieve ALL attributes without semantic filtering.
+        Used for overview/counting queries.
+        
+        Returns:
+            Combined context text with all attributes
+        """
+        results = []
+        
+        try:
+            if self.weaviate_client.collections.exists(self.cdt_class_name):
+                cdt_collection = self.weaviate_client.collections.get(self.cdt_class_name)
+                
+                # Fetch all objects
+                response = cdt_collection.query.fetch_objects(
+                    limit=1000,  # Set high enough to get all attributes
+                    return_properties=[
+                        "combined_text", 
+                        "attribute", 
+                        "data_type"
+                    ]
+                )
+                
+                for obj in response.objects:
+                    props = obj.properties
+                    text = props.get("combined_text", "")
+                    attribute = props.get("attribute", "Unknown Attribute")
+                    data_type = props.get("data_type", "")
+                    results.append(f"[Attribute: {attribute}] ({data_type})\n{text}")
+                    
+                logger.info(f"Retrieved ALL {len(response.objects)} attributes from {self.cdt_class_name}")
+            else:
+                logger.warning(f"Collection {self.cdt_class_name} does not exist in Weaviate")
+                
+        except Exception as e:
+            logger.error(f"Error retrieving all attributes: {e}")
+        
+        if not results:
+            logger.warning("No attributes retrieved from Weaviate")
+            return None
+        
+        context_text = "\n\n".join(results)
+        return context_text
+    
     def retrieve_context(self, query: str, top_k: int = 6) -> Optional[str]:
         """
         Query the attribute data collection in Weaviate and return relevant context.
@@ -310,15 +495,17 @@ class RAGPipeline:
         logger.info(f"Retrieved {len(results)} attribute context snippets from Weaviate")
         return context_text
     
-    def generate_answer(self, query: str, context: Optional[str]) -> str:
+    def generate_answer(self, query: str, context: Optional[str], total_attributes: int, all_attribute_names: List[str] = None) -> str:
         """
         Combine the user's query and the retrieved attribute context, then call LLM.
         Uses the call_llm helper which automatically handles fallback.
-        Includes project metadata for additional context.
+        Includes project metadata and attribute count for additional context.
         
         Args:
             query: User's question
             context: Retrieved context from Weaviate
+            total_attributes: Total number of attributes in the dataset
+            all_attribute_names: List of all attribute names (optional)
             
         Returns:
             LLM-generated answer
@@ -327,8 +514,12 @@ class RAGPipeline:
             return "No relevant attribute information found in the dataset."
         
         try:
+            # Prepare attribute names string
+            attribute_names_str = ""
+            if all_attribute_names:
+                attribute_names_str = ", ".join(all_attribute_names)
+            
             # Use call_llm with Jinja template
-            # Pass template variables including project metadata
             response = call_llm(
                 prompt_or_template="rag_data.jinja",
                 use_template=True,
@@ -337,7 +528,9 @@ class RAGPipeline:
                     "query": query,
                     "context": context,
                     "project_name": self.project_name,
-                    "project_domain": self.project_domain
+                    "project_domain": self.project_domain,
+                    "total_attributes": total_attributes,
+                    "attribute_names": attribute_names_str
                 }
             )
             
@@ -363,6 +556,7 @@ class RAGPipeline:
     def run(self, query: str) -> str:
         """
         Complete RAG flow: retrieve + reason + respond.
+        Intelligently handles counting vs. semantic search queries.
         
         Args:
             query: User's question
@@ -373,11 +567,35 @@ class RAGPipeline:
         logger.info(f"Running RAG for query: {query}")
         logger.info(f"Project context - Name: {self.project_name}, Domain: {self.project_domain}")
         
-        # Retrieve attribute context
-        context = self.retrieve_context(query)
+        # Get total attribute count first (always needed for context)
+        total_attributes = self.get_total_attribute_count()
         
-        # Generate answer
-        response = self.generate_answer(query, context)
+        # Also get MongoDB count for verification
+        mongodb_count = self.get_mongodb_attribute_count()
+        logger.info(f"📊 Attribute count - Weaviate (unique): {total_attributes}, MongoDB: {mongodb_count}")
+        
+        # Check if this is a counting/overview query
+        is_counting_query = self._is_counting_query(query)
+        
+        if is_counting_query:
+            logger.info("Detected counting/overview query - retrieving ALL attributes")
+            
+            # Retrieve all attributes for counting queries
+            context = self.retrieve_all_attributes()
+            
+            # Get all attribute names for listing
+            all_attribute_names = self.get_all_attribute_names()
+            
+            # Generate answer with full context
+            response = self.generate_answer(query, context, total_attributes, all_attribute_names)
+        else:
+            logger.info("Detected specific query - using semantic search")
+            
+            # Use semantic search with moderate top_k
+            context = self.retrieve_context(query, top_k=8)
+            
+            # Generate answer with semantic context
+            response = self.generate_answer(query, context, total_attributes)
         
         return response
     
