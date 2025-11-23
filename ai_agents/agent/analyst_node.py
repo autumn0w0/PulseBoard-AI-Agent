@@ -78,11 +78,12 @@ class AnalystNode:
 
     Workflow:
       1. Get available attributes from cleaned_dt
-      2. Parse user query → query plan (LLM)
-      3. Validate the plan (fields exist, ops allowed)
-      4. Build MongoDB aggregation pipeline
-      5. Execute on {project_id}_data
-      6. Summarize result with LLM
+      2. Analyze data statistics for better context
+      3. Parse user query → query plan (LLM)
+      4. Validate the plan (fields exist, ops allowed)
+      5. Build MongoDB aggregation pipeline
+      6. Execute on {project_id}_data
+      7. Summarize result with LLM
     """
 
     def __init__(self, project_id: str, master_db_name: str = "master"):
@@ -130,11 +131,105 @@ class AnalystNode:
         self.schema = list(self.schema_collection.find({}))
         self.fields = [item["attribute"] for item in self.schema]
         self.field_types = {item["attribute"]: item["data_type"] for item in self.schema}
+        
+        # Get data statistics for better context
+        self.data_stats = self._get_data_statistics()
 
         logger.info(f"[AnalystNode] Initialized for project: {project_id}")
         logger.info(f"[AnalystNode] Project Name: {self.project_name}, Domain: {self.project_domain}")
         logger.info(f"[AnalystNode] User ID: {self.user_id}, Database: {self.db_name}")
         logger.info(f"[AnalystNode] Loaded schema with {len(self.fields)} fields: {self.fields}")
+        logger.info(f"[AnalystNode] Total documents in collection: {self.data_stats.get('total_documents', 0)}")
+
+    # -------------------------------------------------------------------------
+    # DATA STATISTICS
+    # -------------------------------------------------------------------------
+    def _get_data_statistics(self) -> Dict[str, Any]:
+        """
+        Get basic statistics about the data collection.
+        
+        Returns:
+            Dictionary with data statistics
+        """
+        try:
+            total_docs = self.data_collection.count_documents({})
+            
+            # Get sample document to understand structure
+            sample_doc = self.data_collection.find_one({}, projection={"_id": 0})
+            
+            # Categorize fields
+            numeric_fields = [f for f, t in self.field_types.items() 
+                            if t in ["integer", "float", "number", "numeric"]]
+            categorical_fields = [f for f, t in self.field_types.items() 
+                                if t in ["string", "text", "category"]]
+            date_fields = [f for f, t in self.field_types.items() 
+                         if "date" in t.lower() or "time" in t.lower()]
+            
+            stats = {
+                "total_documents": total_docs,
+                "total_fields": len(self.fields),
+                "numeric_fields": numeric_fields,
+                "categorical_fields": categorical_fields,
+                "date_fields": date_fields,
+                "sample_document": sample_doc
+            }
+            
+            logger.info(f"[AnalystNode] Data stats - Docs: {total_docs}, "
+                       f"Numeric fields: {len(numeric_fields)}, "
+                       f"Categorical: {len(categorical_fields)}, "
+                       f"Date: {len(date_fields)}")
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"[AnalystNode] Error getting data statistics: {e}")
+            return {
+                "total_documents": 0,
+                "total_fields": len(self.fields),
+                "numeric_fields": [],
+                "categorical_fields": [],
+                "date_fields": []
+            }
+
+    def _classify_query_type(self, query: str) -> str:
+        """
+        Classify the type of analytical query.
+        
+        Args:
+            query: User's query string
+            
+        Returns:
+            Query type: "aggregation", "counting", "filtering", "statistical"
+        """
+        query_lower = query.lower()
+        
+        # Counting queries
+        if any(keyword in query_lower for keyword in [
+            'how many', 'count', 'number of', 'total number'
+        ]):
+            return "counting"
+        
+        # Statistical queries
+        if any(keyword in query_lower for keyword in [
+            'average', 'mean', 'median', 'sum', 'total',
+            'maximum', 'max', 'minimum', 'min', 'highest', 'lowest'
+        ]):
+            return "statistical"
+        
+        # Aggregation queries
+        if any(keyword in query_lower for keyword in [
+            'group by', 'breakdown', 'distribution', 'by category',
+            'per', 'each', 'top', 'bottom'
+        ]):
+            return "aggregation"
+        
+        # Filtering queries
+        if any(keyword in query_lower for keyword in [
+            'show', 'list', 'find', 'get', 'where', 'filter'
+        ]):
+            return "filtering"
+        
+        return "general"
 
     # -------------------------------------------------------------------------
     # MAIN ENTRY POINT
@@ -151,11 +246,15 @@ class AnalystNode:
         """
         logger.info(f"[AnalystNode] Query received: {user_query}")
         logger.info(f"[AnalystNode] Project context - Name: {self.project_name}, Domain: {self.project_domain}")
+        
+        # Classify query type
+        query_type = self._classify_query_type(user_query)
+        logger.info(f"[AnalystNode] Classified query type: {query_type}")
 
         # STEP 1 — Build Query Plan from natural language
-        plan = self.parse_intent(user_query)
+        plan = self.parse_intent(user_query, query_type)
         if plan is None:
-            return "I couldn't understand your analytical query. Please rephrase it."
+            return "I couldn't understand your analytical query. Please rephrase it or try asking: 'What is the average [field]?', 'How many records are there?', 'Show me the top 10 [field]'"
 
         # STEP 2 — Validate plan (fields exist, op allowed)
         validation_error = self.validate_plan(plan)
@@ -169,34 +268,43 @@ class AnalystNode:
         result = self.execute_pipeline(pipeline)
 
         # STEP 5 — Summarize results via LLM
-        return self.summarize(user_query, plan, result)
+        return self.summarize(user_query, plan, result, query_type)
 
     # -------------------------------------------------------------------------
     # STEP 1 — LLM INTENT PARSER
     # -------------------------------------------------------------------------
-    def parse_intent(self, query: str) -> Optional[Dict]:
+    def parse_intent(self, query: str, query_type: str = "general") -> Optional[Dict]:
         """
         Converts natural language → structured query plan using LLM.
         
         Args:
             query: User's natural language query
+            query_type: Classified query type for better context
             
         Returns:
             Query plan dictionary or None if parsing fails
         """
         try:
+            # Prepare enhanced context
+            context_vars = {
+                "user_query": query,
+                "query_type": query_type,
+                "available_fields": json.dumps(self.fields),
+                "field_types": json.dumps(self.field_types),
+                "project_name": self.project_name,
+                "project_domain": self.project_domain,
+                "total_documents": self.data_stats.get("total_documents", 0),
+                "numeric_fields": json.dumps(self.data_stats.get("numeric_fields", [])),
+                "categorical_fields": json.dumps(self.data_stats.get("categorical_fields", [])),
+                "date_fields": json.dumps(self.data_stats.get("date_fields", []))
+            }
+            
             # Use call_llm with Jinja template
             response = call_llm(
                 prompt_or_template="analyst_plan.jinja",
                 use_template=True,
                 use_fallback=True,
-                context_variables={
-                    "user_query": query,
-                    "available_fields": json.dumps(self.fields),
-                    "field_types": json.dumps(self.field_types),
-                    "project_name": self.project_name,
-                    "project_domain": self.project_domain
-                }
+                context_variables=context_vars
             )
 
             # Extract text from response
@@ -250,7 +358,7 @@ class AnalystNode:
             plan: Query plan dictionary
             
         Returns:
-            Error message if validation fails, None if valid
+            Error message with helpful suggestions if validation fails, None if valid
         """
         op = plan.get("operation")
         field = plan.get("field")
@@ -266,17 +374,52 @@ class AnalystNode:
         }
 
         if op not in supported_ops:
-            return f"Operation '{op}' is not supported. Supported operations: {', '.join(supported_ops)}"
+            return (f"❌ Operation '{op}' is not supported.\n\n"
+                   f"✅ Supported operations:\n"
+                   f"  • group_by_count - Group and count by a field\n"
+                   f"  • count - Count total records\n"
+                   f"  • avg, sum, max, min - Statistical operations on numeric fields\n"
+                   f"  • filter_only - Filter data without aggregation")
 
-        # validate field (except for pure count)
+        # Validate field (except for pure count)
         if field and field not in self.fields and op != "count":
-            return f"Field '{field}' does not exist in your dataset. Available fields: {', '.join(self.fields)}"
+            # Suggest similar fields
+            similar_fields = [f for f in self.fields if field.lower() in f.lower()]
+            
+            error_msg = f"❌ Field '{field}' does not exist in your dataset.\n\n"
+            
+            if similar_fields:
+                error_msg += f"💡 Did you mean one of these?\n"
+                for sf in similar_fields[:5]:
+                    error_msg += f"  • {sf} ({self.field_types.get(sf, 'unknown')})\n"
+            else:
+                error_msg += f"📋 Available fields ({len(self.fields)} total):\n"
+                # Show first 10 fields
+                for f in self.fields[:10]:
+                    error_msg += f"  • {f} ({self.field_types.get(f, 'unknown')})\n"
+                if len(self.fields) > 10:
+                    error_msg += f"  ... and {len(self.fields) - 10} more"
+            
+            return error_msg
 
-        # numeric validation
+        # Numeric validation
         numeric_ops = {"avg", "sum", "max", "min"}
         if op in numeric_ops:
-            if self.field_types.get(field) not in ["integer", "float", "number", "numeric"]:
-                return f"Field '{field}' is not numeric (type: {self.field_types.get(field)}). Cannot perform {op}."
+            field_type = self.field_types.get(field)
+            if field_type not in ["integer", "float", "number", "numeric"]:
+                numeric_fields = self.data_stats.get("numeric_fields", [])
+                
+                error_msg = (f"❌ Field '{field}' is type '{field_type}', not numeric. "
+                           f"Cannot perform {op} operation.\n\n")
+                
+                if numeric_fields:
+                    error_msg += f"💡 Try one of these numeric fields instead:\n"
+                    for nf in numeric_fields[:5]:
+                        error_msg += f"  • {nf}\n"
+                else:
+                    error_msg += "⚠️ No numeric fields found in this dataset."
+                
+                return error_msg
 
         return None
 
@@ -295,9 +438,10 @@ class AnalystNode:
         """
         pipeline = []
 
-        # add filter
+        # Add filter
         if plan.get("filter"):
             pipeline.append({"$match": plan["filter"]})
+            logger.info(f"[AnalystNode] Added filter stage: {plan['filter']}")
 
         op = plan.get("operation")
         field = plan.get("field")
@@ -307,31 +451,39 @@ class AnalystNode:
                 {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}}
             ])
+            logger.info(f"[AnalystNode] Added group_by_count for field: {field}")
 
         elif op == "avg":
             pipeline.append({"$group": {"_id": None, "value": {"$avg": f"${field}"}}})
+            logger.info(f"[AnalystNode] Added avg aggregation for field: {field}")
 
         elif op == "sum":
             pipeline.append({"$group": {"_id": None, "value": {"$sum": f"${field}"}}})
+            logger.info(f"[AnalystNode] Added sum aggregation for field: {field}")
 
         elif op == "max":
             pipeline.append({"$group": {"_id": None, "value": {"$max": f"${field}"}}})
+            logger.info(f"[AnalystNode] Added max aggregation for field: {field}")
 
         elif op == "min":
             pipeline.append({"$group": {"_id": None, "value": {"$min": f"${field}"}}})
+            logger.info(f"[AnalystNode] Added min aggregation for field: {field}")
 
         elif op == "count":
             pipeline.append({"$count": "total"})
+            logger.info(f"[AnalystNode] Added count aggregation")
 
         elif op == "filter_only":
             # Just apply the filter, no aggregation
+            logger.info(f"[AnalystNode] Filter-only operation, no aggregation")
             pass
 
-        # limit
+        # Add limit
         if plan.get("limit"):
             pipeline.append({"$limit": plan["limit"]})
+            logger.info(f"[AnalystNode] Added limit: {plan['limit']}")
 
-        logger.info(f"[AnalystNode] Final Mongo Pipeline: {pipeline}")
+        logger.info(f"[AnalystNode] Final Mongo Pipeline ({len(pipeline)} stages): {pipeline}")
         return pipeline
 
     # -------------------------------------------------------------------------
@@ -349,11 +501,23 @@ class AnalystNode:
         """
         try:
             result = list(self.data_collection.aggregate(pipeline))
-            logger.info(f"[AnalystNode] Pipeline executed successfully, returned {len(result)} results")
-            logger.debug(f"[AnalystNode] Raw Result: {result}")
+            logger.info(f"[AnalystNode] ✅ Pipeline executed successfully, returned {len(result)} results")
+            
+            # Log summary of results
+            if result:
+                if len(result) == 1 and result[0].get("_id") is None:
+                    # Single aggregated value
+                    logger.info(f"[AnalystNode] Result value: {result[0].get('value')}")
+                elif len(result) <= 5:
+                    # Small result set, log all
+                    logger.debug(f"[AnalystNode] Results: {result}")
+                else:
+                    # Large result set, log count only
+                    logger.info(f"[AnalystNode] Returned {len(result)} grouped results")
+            
             return result
         except Exception as e:
-            logger.error(f"[AnalystNode] Pipeline execution failed: {e}")
+            logger.error(f"[AnalystNode] ❌ Pipeline execution failed: {e}")
             import traceback
             traceback.print_exc()
             return []
@@ -361,7 +525,7 @@ class AnalystNode:
     # -------------------------------------------------------------------------
     # STEP 5 — SUMMARIZE RESULT
     # -------------------------------------------------------------------------
-    def summarize(self, user_query: str, plan: Dict, result: List[Dict]) -> str:
+    def summarize(self, user_query: str, plan: Dict, result: List[Dict], query_type: str = "general") -> str:
         """
         Generate natural language summary of analytical results.
         
@@ -369,11 +533,15 @@ class AnalystNode:
             user_query: Original user query
             plan: Query plan used
             result: Execution results
+            query_type: Classified query type
             
         Returns:
             Natural language summary
         """
         try:
+            # Prepare result summary
+            result_summary = self._prepare_result_summary(result, plan)
+            
             # Use call_llm with Jinja template
             response = call_llm(
                 prompt_or_template="analyst_summary.jinja",
@@ -381,10 +549,13 @@ class AnalystNode:
                 use_fallback=True,
                 context_variables={
                     "user_query": user_query,
+                    "query_type": query_type,
                     "query_plan": json.dumps(plan, indent=2),
                     "result": json.dumps(result, default=json_util.default, indent=2),
+                    "result_summary": result_summary,
                     "project_name": self.project_name,
-                    "project_domain": self.project_domain
+                    "project_domain": self.project_domain,
+                    "total_documents": self.data_stats.get("total_documents", 0)
                 }
             )
 
@@ -398,14 +569,58 @@ class AnalystNode:
             else:
                 answer = str(response)
 
-            logger.info("[AnalystNode] Generated summary using call_llm helper with Jinja template")
+            logger.info("[AnalystNode] ✅ Generated summary using call_llm helper with Jinja template")
             return answer.strip()
 
         except Exception as e:
-            logger.error(f"[AnalystNode] Error generating summary: {e}")
+            logger.error(f"[AnalystNode] ❌ Error generating summary: {e}")
             import traceback
             traceback.print_exc()
             return f"Analysis completed but error generating summary: {str(e)}\n\nRaw results: {json.dumps(result, default=json_util.default, indent=2)}"
+
+    def _prepare_result_summary(self, result: List[Dict], plan: Dict) -> str:
+        """
+        Prepare a human-readable summary of results for the LLM.
+        
+        Args:
+            result: Raw MongoDB result
+            plan: Query plan used
+            
+        Returns:
+            Human-readable result summary
+        """
+        if not result:
+            return "No data found matching the query criteria."
+        
+        op = plan.get("operation")
+        
+        if op in ["avg", "sum", "max", "min"]:
+            # Single value result
+            value = result[0].get("value")
+            return f"Result: {value}"
+        
+        elif op == "count":
+            # Count result
+            total = result[0].get("total", 0)
+            return f"Total count: {total:,} records"
+        
+        elif op == "group_by_count":
+            # Grouped results
+            num_groups = len(result)
+            total_count = sum(item.get("count", 0) for item in result)
+            top_3 = result[:3]
+            
+            summary = f"Found {num_groups} distinct groups, {total_count:,} total records.\n"
+            summary += "Top 3:\n"
+            for item in top_3:
+                group_name = item.get("_id", "Unknown")
+                count = item.get("count", 0)
+                summary += f"  • {group_name}: {count:,}\n"
+            
+            return summary
+        
+        else:
+            return f"Returned {len(result)} results"
 
     def close(self):
         """Close MongoDB connection."""
