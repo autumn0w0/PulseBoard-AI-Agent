@@ -3,6 +3,9 @@ from pydantic import BaseModel
 from bson import ObjectId
 import sys
 import os
+from fastapi import HTTPException
+from pydantic import BaseModel, EmailStr, field_validator
+import re
 from ai_agents.registration.user_creation import run_user_creation
 from ai_agents.registration.project_creation import run_project_creation
 from ai_agents.pipelines.data_type_finding import run_dtf
@@ -18,11 +21,6 @@ from ai_agents.pipelines.data_to_weviate import run_dtw
 logger = get_logger(__name__)
 
 app = FastAPI()
-
-class UserCreateRequest(BaseModel):
-    email: str
-    first_name: str
-    last_name: str
 
 class ProjectCreateRequest(BaseModel):
     user_id: str
@@ -50,6 +48,38 @@ def convert_objectid_to_str(data):
     else:
         return data
 
+from fastapi import HTTPException
+from pydantic import BaseModel, EmailStr, field_validator
+import re
+
+class UserCreateRequest(BaseModel):
+    email: EmailStr  # Changed to EmailStr for automatic email validation
+    first_name: str
+    last_name: str
+    password: str
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        """Validate password strength"""
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'\d', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+    
+    @field_validator('first_name', 'last_name')
+    @classmethod
+    def validate_name(cls, v):
+        """Validate names are not empty"""
+        if not v or not v.strip():
+            raise ValueError('Name cannot be empty')
+        return v.strip()
+
 @app.post("/create-user")
 async def create_user(user_data: UserCreateRequest):
     try:
@@ -58,7 +88,8 @@ async def create_user(user_data: UserCreateRequest):
         result = run_user_creation(
             email=user_data.email,
             first_name=user_data.first_name,
-            last_name=user_data.last_name
+            last_name=user_data.last_name,
+            password=user_data.password
         )
         
         if result["status"] == "user_already_exists":
@@ -68,6 +99,9 @@ async def create_user(user_data: UserCreateRequest):
         # Convert ObjectId to string
         if result.get("user") and "_id" in result["user"]:
             result["user"]["_id"] = str(result["user"]["_id"])
+            # Remove password from response for security
+            result["user"].pop("password", None)
+            
         if result.get("client_config") and "_id" in result["client_config"]:
             result["client_config"]["_id"] = str(result["client_config"]["_id"])
         
@@ -76,6 +110,10 @@ async def create_user(user_data: UserCreateRequest):
         
     except HTTPException:
         raise
+    except ValueError as e:
+        # Handle Pydantic validation errors
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

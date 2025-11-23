@@ -65,16 +65,22 @@ def create_project_object(project_id, project_name, domain):
         "domain": domain,
         "mongodb": {
             "collections": {
-                f"{project_id}_chart_mapping": f"{project_id}_chart_mapping",
+                f"{project_id}_charts": f"{project_id}_charts",
                 f"{project_id}_cleaned_data": f"{project_id}_cleaned_data",
-                f"{project_id}_data_type": f"{project_id}_data_type",
+                f"{project_id}_cleaned_dt": f"{project_id}_cleaned_dt",
                 f"{project_id}_data": f"{project_id}_data",
-                f"{project_id}_vectors": f"{project_id}_vectors"
+                f"{project_id}_data_type": f"{project_id}_data_type",
+                f"{project_id}_weaviate_cd": f"{project_id}_weaviate_cd",
+                f"{project_id}_weaviate_cdt": f"{project_id}_weaviate_cdt",
+                f"{project_id}_weaviate_vectors_cd": f"{project_id}_weaviate_vectors_cd",
+                f"{project_id}_weaviate_vectors_cdt": f"{project_id}_weaviate_vectors_cdt",
             }
         },
         "weaviate": {
             "collections": {
-                f"{project_id}_data": f"{project_id}_data"
+                f"{project_id}_weviate_cd": f"{project_id}_weviate_cd",
+                f"{project_id}_weviate_cdt": f"{project_id}_weviate_cdt",
+
             }
         }
     }
@@ -150,16 +156,22 @@ def create_mongodb_collections(user_id, project_id, mongodb_collections):
         "domain": domain,
         "mongodb": {
             "collections": {
-                "UID001PJ001_chart_mapping": f"{project_id}_chart_mapping",
-                "UID001PJ001_cleaned_data": f"{project_id}_cleaned_data",
-                "UID001PJ001_data_type": f"{project_id}_data_type",
-                "UID001PJ001_data": f"{project_id}_data",
-                "UID001PJ001_vectors": f"{project_id}_vectors"
+                f"{project_id}_charts": f"{project_id}_charts",
+                f"{project_id}_cleaned_data": f"{project_id}_cleaned_data",
+                f"{project_id}_cleaned_dt": f"{project_id}_cleaned_dt",
+                f"{project_id}_data": f"{project_id}_data",
+                f"{project_id}_data_type": f"{project_id}_data_type",
+                f"{project_id}_weaviate_cd": f"{project_id}_weaviate_cd",
+                f"{project_id}_weaviate_cdt": f"{project_id}_weaviate_cdt",
+                f"{project_id}_weaviate_vectors_cd": f"{project_id}_weaviate_vectors_cd",
+                f"{project_id}_weaviate_vectors_cdt": f"{project_id}_weaviate_vectors_cdt",
             }
         },
         "weaviate": {
             "collections": {
-                "UID001PJ001_data": f"{project_id}_data"
+                f"{project_id}_weviate_cd": f"{project_id}_weviate_cd",
+                f"{project_id}_weviate_cdt": f"{project_id}_weviate_cdt",
+
             }
         }
     }

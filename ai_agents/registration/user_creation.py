@@ -1,9 +1,8 @@
 import os
 import sys
 from dotenv import load_dotenv
-
+from werkzeug.security import generate_password_hash
 sys.path.append("../../")
-
 from helpers.database.connection_to_db import connect_to_mongodb
 
 # Load environment variables
@@ -67,7 +66,7 @@ def add_client_config(user_id, client_config_collection):
     
     return config_doc
 
-def run_user_creation(email, first_name, last_name):
+def run_user_creation(email, first_name, last_name, password):
     """
     Main function to create user and client config entries
     
@@ -75,6 +74,7 @@ def run_user_creation(email, first_name, last_name):
         email: User's email address
         first_name: User's first name
         last_name: User's last name
+        password: User's password (will be hashed)
     
     Returns:
         dict: Dictionary containing user and client config documents
@@ -106,11 +106,15 @@ def run_user_creation(email, first_name, last_name):
         # Create full name
         full_name = f"{first_name} {last_name}"
         
+        # Hash the password
+        password_hash = generate_password_hash(password)
+        
         # Create user document
         user_doc = {
             "user_id": user_id,
             "name": full_name,
-            "email": email
+            "email": email,
+            "password": password_hash
         }
         
         # Insert user into database
@@ -134,7 +138,6 @@ def run_user_creation(email, first_name, last_name):
         # Close MongoDB connection
         mongo_client.close()
 
-
 if __name__ == "__main__":
     # Get user input
     print("=== Add New User ===")
@@ -142,9 +145,23 @@ if __name__ == "__main__":
     first_name = input("Enter first name: ").strip()
     last_name = input("Enter last name: ").strip()
     
+    # Get password (using getpass for security - hides input)
+    import getpass
+    password = getpass.getpass("Enter password: ").strip()
+    password_confirm = getpass.getpass("Confirm password: ").strip()
+    
+    # Validate password
+    if password != password_confirm:
+        print("Error: Passwords do not match!")
+        sys.exit(1)
+    
+    if len(password) < 8:
+        print("Error: Password must be at least 8 characters long!")
+        sys.exit(1)
+    
     try:
         # Create user and client config using run function
-        result = run_user_creation(email, first_name, last_name)
+        result = run_user_creation(email, first_name, last_name, password)
         
         # Display created entries
         if result["status"] == "success":
