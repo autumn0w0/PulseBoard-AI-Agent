@@ -266,6 +266,7 @@ class RAGPipeline:
             True if it's a counting/overview query, False otherwise
         """
         counting_keywords = [
+            # Direct counting
             'how many', 'number of', 'count', 'total', 'how much',
             
             # Overview requests
@@ -286,9 +287,47 @@ class RAGPipeline:
         query_lower = query.lower()
         return any(keyword in query_lower for keyword in counting_keywords)
     
-    def get_total_chart_count(self) -> int:
+    def get_direct_display_charts_from_mongodb(self) -> List[str]:
+        """
+        Get list of chart titles that have display_mode: "direct" from MongoDB.
+        These are the charts actually shown on the dashboard.
+        
+        Returns:
+            List of chart titles with display_mode="direct"
+        """
+        try:
+            # Look for charts collection in MongoDB
+            charts_collection_name = f"{self.project_id}_charts"
+            
+            if charts_collection_name in self.db.list_collection_names():
+                charts_collection = self.db[charts_collection_name]
+                
+                # Query for charts with display_mode="direct"
+                direct_charts = charts_collection.find({"display_mode": "direct"})
+                
+                chart_titles = []
+                for chart in direct_charts:
+                    title = chart.get("chart_title") or chart.get("title") or chart.get("name")
+                    if title:
+                        chart_titles.append(title)
+                
+                logger.info(f"Found {len(chart_titles)} charts with display_mode='direct' in MongoDB")
+                return chart_titles
+            else:
+                logger.warning(f"MongoDB collection '{charts_collection_name}' not found")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting direct display charts from MongoDB: {e}")
+            return []
+    
+    def get_total_chart_count(self, filter_direct_only: bool = True) -> int:
         """
         Get the total number of UNIQUE charts in the Weaviate collection.
+        Optionally filters to only charts with display_mode="direct" from MongoDB.
+        
+        Args:
+            filter_direct_only: If True, only count charts shown on dashboard (display_mode="direct")
         
         Returns:
             Total count of unique charts
@@ -310,6 +349,14 @@ class RAGPipeline:
                     if chart_title:
                         unique_charts.add(chart_title)
                 
+                # Filter by display_mode="direct" if requested
+                if filter_direct_only:
+                    direct_chart_titles = set(self.get_direct_display_charts_from_mongodb())
+                    if direct_chart_titles:
+                        # Only count charts that are in the "direct" display list
+                        unique_charts = unique_charts.intersection(direct_chart_titles)
+                        logger.info(f"Filtered to {len(unique_charts)} charts with display_mode='direct'")
+                
                 total_count = len(unique_charts)
                 total_documents = len(response.objects)
                 
@@ -323,18 +370,22 @@ class RAGPipeline:
             logger.error(f"Error getting total chart count: {e}")
             return 0
     
-    def get_all_chart_titles(self) -> List[str]:
+    def get_all_chart_titles(self, filter_direct_only: bool = True) -> List[str]:
         """
         Retrieve all UNIQUE chart titles from the Weaviate collection.
+        Optionally filters to only charts with display_mode="direct" from MongoDB.
+        
+        Args:
+            filter_direct_only: If True, only return charts shown on dashboard (display_mode="direct")
         
         Returns:
-            List of unique chart titles
+            List of unique chart titles with types
         """
         try:
             if self.weaviate_client.collections.exists(self.cd_class_name):
                 cd_collection = self.weaviate_client.collections.get(self.cd_class_name)
                 
-                # Fetch all objects with just the chart title
+                # Fetch all objects with chart title and type
                 response = cd_collection.query.fetch_objects(
                     limit=1000,
                     return_properties=["chart_title", "chart_type"]
@@ -348,6 +399,14 @@ class RAGPipeline:
                     if chart_title and chart_title not in unique_charts:
                         unique_charts[chart_title] = chart_type
                 
+                # Filter by display_mode="direct" if requested
+                if filter_direct_only:
+                    direct_chart_titles = set(self.get_direct_display_charts_from_mongodb())
+                    if direct_chart_titles:
+                        # Only include charts that are in the "direct" display list
+                        unique_charts = {k: v for k, v in unique_charts.items() if k in direct_chart_titles}
+                        logger.info(f"Filtered to {len(unique_charts)} charts with display_mode='direct'")
+                
                 chart_list = [f"{title} ({ctype})" for title, ctype in sorted(unique_charts.items())]
                 logger.info(f"Retrieved {len(chart_list)} UNIQUE chart titles")
                 return chart_list
@@ -359,15 +418,27 @@ class RAGPipeline:
             logger.error(f"Error retrieving chart titles: {e}")
             return []
     
-    def retrieve_all_charts(self) -> Optional[str]:
+    def retrieve_all_charts(self, filter_direct_only: bool = True) -> Optional[str]:
         """
         Retrieve ALL charts without semantic filtering.
+        Optionally filters to only charts with display_mode="direct" from MongoDB.
         Used for overview/counting queries.
+        
+        Args:
+            filter_direct_only: If True, only retrieve charts shown on dashboard (display_mode="direct")
         
         Returns:
             Combined context text with all charts
         """
         results = []
+        
+        # Get list of direct display charts if filtering
+        direct_chart_titles = None
+        if filter_direct_only:
+            direct_chart_titles = set(self.get_direct_display_charts_from_mongodb())
+            if not direct_chart_titles:
+                logger.warning("No direct display charts found in MongoDB, retrieving all charts")
+                direct_chart_titles = None
         
         try:
             if self.weaviate_client.collections.exists(self.cd_class_name):
@@ -386,12 +457,20 @@ class RAGPipeline:
                 
                 for obj in response.objects:
                     props = obj.properties
-                    text = props.get("combined_text", "")
                     title = props.get("chart_title", "Untitled Chart")
+                    
+                    # Filter by direct display mode if requested
+                    if direct_chart_titles and title not in direct_chart_titles:
+                        continue
+                    
+                    text = props.get("combined_text", "")
                     chart_type = props.get("chart_type", "")
                     results.append(f"[Chart: {title}] ({chart_type})\n{text}")
-                    
-                logger.info(f"Retrieved ALL {len(response.objects)} charts from {self.cd_class_name}")
+                
+                if filter_direct_only and direct_chart_titles:
+                    logger.info(f"Retrieved {len(results)} charts with display_mode='direct' from {self.cd_class_name}")
+                else:
+                    logger.info(f"Retrieved ALL {len(results)} charts from {self.cd_class_name}")
             else:
                 logger.warning(f"Collection {self.cd_class_name} does not exist in Weaviate")
                 
@@ -405,18 +484,28 @@ class RAGPipeline:
         context_text = "\n\n".join(results)
         return context_text
     
-    def retrieve_context(self, query: str, top_k: int = 6) -> Optional[str]:
+    def retrieve_context(self, query: str, top_k: int = 6, filter_direct_only: bool = True) -> Optional[str]:
         """
         Query the chart data collection in Weaviate and return relevant context.
+        Optionally filters to only charts with display_mode="direct" from MongoDB.
         
         Args:
             query: User's search query
             top_k: Number of top results to retrieve
+            filter_direct_only: If True, only retrieve charts shown on dashboard (display_mode="direct")
             
         Returns:
             Combined context text or None if no results found
         """
         results = []
+        
+        # Get list of direct display charts if filtering
+        direct_chart_titles = None
+        if filter_direct_only:
+            direct_chart_titles = set(self.get_direct_display_charts_from_mongodb())
+            if not direct_chart_titles:
+                logger.warning("No direct display charts found in MongoDB, retrieving all charts")
+                direct_chart_titles = None
         
         # Generate query vector
         query_vector = self._get_query_vector(query)
@@ -428,9 +517,13 @@ class RAGPipeline:
         try:
             if self.weaviate_client.collections.exists(self.cd_class_name):
                 cd_collection = self.weaviate_client.collections.get(self.cd_class_name)
+                
+                # Fetch more results to account for filtering
+                fetch_limit = top_k * 3 if direct_chart_titles else top_k
+                
                 response = cd_collection.query.near_vector(
                     near_vector=query_vector,
-                    limit=top_k,
+                    limit=fetch_limit,
                     return_properties=[
                         "combined_text", 
                         "chart_title", 
@@ -440,13 +533,24 @@ class RAGPipeline:
                 )
                 
                 for obj in response.objects:
+                    if len(results) >= top_k:
+                        break
+                        
                     props = obj.properties
-                    text = props.get("combined_text", "")
                     title = props.get("chart_title", "Untitled Chart")
+                    
+                    # Filter by direct display mode if requested
+                    if direct_chart_titles and title not in direct_chart_titles:
+                        continue
+                    
+                    text = props.get("combined_text", "")
                     chart_type = props.get("chart_type", "")
                     results.append(f"[Chart: {title}] ({chart_type})\n{text}")
-                    
-                logger.info(f"Retrieved {len(response.objects)} chart results from {self.cd_class_name}")
+                
+                if filter_direct_only and direct_chart_titles:
+                    logger.info(f"Retrieved {len(results)} charts with display_mode='direct' from {self.cd_class_name}")
+                else:
+                    logger.info(f"Retrieved {len(results)} chart results from {self.cd_class_name}")
             else:
                 logger.warning(f"Collection {self.cd_class_name} does not exist in Weaviate")
                 
