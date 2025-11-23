@@ -9,6 +9,7 @@ from ai_agents.pipelines.data_type_finding import run_dtf
 from ai_agents.pipelines.data_anomaly import run_cdt
 from ai_agents.pipelines.chart_suggestion import run_cs
 from ai_agents.pipelines.data_cleaning import run_chart_pipeline
+from ai_agents.agent.middleware_node import run_middleware
 from helpers.logger import get_logger
 from ai_agents.pipelines.data_flatted_weviate import run_dfw
 from ai_agents.pipelines.vectorization import run_v
@@ -31,6 +32,11 @@ class ProjectCreateRequest(BaseModel):
 class DataPipelineRequest(BaseModel):
     project_id: str
 
+class MiddlewareQueryRequest(BaseModel):
+    project_id: str
+    query: str
+    master_db_name: str = "master"
+
 def convert_objectid_to_str(data):
     """
     Recursively convert all ObjectId instances to strings in nested data structures
@@ -44,7 +50,7 @@ def convert_objectid_to_str(data):
     else:
         return data
 
-@app.post("/users/create")
+@app.post("/create-user")
 async def create_user(user_data: UserCreateRequest):
     try:
         logger.info(f"Creating user with email: {user_data.email}")
@@ -74,7 +80,7 @@ async def create_user(user_data: UserCreateRequest):
         logger.error(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/projects/create")
+@app.post("/create-project")
 async def create_project(project_data: ProjectCreateRequest):
     try:
         logger.info(f"Creating project for user: {project_data.user_id}")
@@ -106,7 +112,7 @@ async def create_project(project_data: ProjectCreateRequest):
         logger.error(f"Error creating project: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/data/process-pipeline")
+@app.post("/data-process-pipeline")
 async def process_data_pipeline(pipeline_data: DataPipelineRequest):
     """
     Run the complete data processing pipeline:
@@ -210,6 +216,67 @@ async def process_data_pipeline(pipeline_data: DataPipelineRequest):
         raise
     except Exception as e:
         logger.error(f"Error in data pipeline: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/agent-query")
+async def query_middleware(request: MiddlewareQueryRequest):
+    """
+    Process user query through the middleware node.
+    The middleware will classify the intent and route to appropriate pipeline:
+    - Data Analysis (Analyst Node)
+    - Chart Insights (RAG Charts Node)
+    - Data Schema (RAG Data Node)
+    - General queries
+    
+    Example request:
+    {
+        "project_id": "UID001PJ001",
+        "query": "What is the average salary?"
+    }
+    
+    Example response:
+    {
+        "response": "The average salary is $75,000..."
+    }
+    """
+    try:
+        project_id = request.project_id
+        query = request.query
+        master_db_name = request.master_db_name
+        
+        logger.info(f"Processing middleware query for project: {project_id}")
+        logger.info(f"Query: {query}")
+        
+        # Validate inputs
+        if not project_id or not query:
+            raise HTTPException(
+                status_code=400, 
+                detail="Both project_id and query are required"
+            )
+        
+        # Run middleware
+        response = run_middleware(
+            project_id=project_id,
+            query=query,
+            master_db_name=master_db_name
+        )
+        
+        logger.info(f"Middleware query completed for project {project_id}")
+        
+        return {
+            "response": response
+        }
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Validation error in middleware query: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except ConnectionError as e:
+        logger.error(f"Connection error in middleware query: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Database connection failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in middleware query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
