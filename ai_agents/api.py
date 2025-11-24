@@ -6,6 +6,7 @@ import os
 from fastapi import HTTPException
 from pydantic import BaseModel, EmailStr, field_validator
 import re
+
 from ai_agents.registration.user_creation import run_user_creation
 from ai_agents.registration.project_creation import run_project_creation
 from ai_agents.pipelines.data_type_finding import run_dtf
@@ -17,6 +18,7 @@ from helpers.logger import get_logger
 from ai_agents.pipelines.data_flatted_weviate import run_dfw
 from ai_agents.pipelines.vectorization import run_v
 from ai_agents.pipelines.data_to_weviate import run_dtw
+from ai_agents.registration.user_login import run_user_login
 
 logger = get_logger(__name__)
 
@@ -315,6 +317,48 @@ async def query_middleware(request: MiddlewareQueryRequest):
         raise HTTPException(status_code=503, detail=f"Database connection failed: {str(e)}")
     except Exception as e:
         logger.error(f"Error in middleware query: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add this with your other Pydantic models
+class UserLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+# Add this endpoint to your FastAPI app
+@app.post("/user-login")
+async def login_user(login_data: UserLoginRequest):
+    """
+    Authenticate user and return user information.
+    
+    Example request:
+    {
+        "email": "user@example.com",
+        "password": "YourPassword123"
+    }
+    """
+    try:
+        logger.info(f"Login request for email: {login_data.email}")
+        
+        result = run_user_login(
+            email=login_data.email,
+            password=login_data.password
+        )
+        
+        if result["status"] == "failed":
+            logger.warning(f"Login failed: {result['message']}")
+            raise HTTPException(status_code=401, detail=result["message"])
+        
+        # Convert ObjectId to string if present
+        if result.get("user") and "_id" in result["user"]:
+            result["user"]["_id"] = str(result["user"]["_id"])
+        
+        logger.info(f"Login successful: {result['user']['user_id']}")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in login endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
