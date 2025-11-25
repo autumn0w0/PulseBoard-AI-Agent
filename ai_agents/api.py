@@ -6,6 +6,9 @@ import os
 from fastapi import HTTPException
 from pydantic import BaseModel, EmailStr, field_validator
 import re
+from fastapi import HTTPException
+from pydantic import BaseModel, EmailStr, field_validator
+import re
 
 from ai_agents.registration.user_creation import run_user_creation
 from ai_agents.registration.project_creation import run_project_creation
@@ -49,10 +52,6 @@ def convert_objectid_to_str(data):
         return str(data)
     else:
         return data
-
-from fastapi import HTTPException
-from pydantic import BaseModel, EmailStr, field_validator
-import re
 
 class UserCreateRequest(BaseModel):
     email: EmailStr  # Changed to EmailStr for automatic email validation
