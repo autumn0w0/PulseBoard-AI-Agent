@@ -1,27 +1,27 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from bson import ObjectId
+from pydantic import BaseModel, EmailStr, field_validator
+import re
 import sys
-import os
-from fastapi import HTTPException
-from pydantic import BaseModel, EmailStr, field_validator
-import re
-from fastapi import HTTPException
-from pydantic import BaseModel, EmailStr, field_validator
-import re
-
-from ai_agents.registration.user_creation import run_user_creation
-from ai_agents.registration.project_creation import run_project_creation
-from ai_agents.pipelines.data_type_finding import run_dtf
-from ai_agents.pipelines.data_anomaly import run_cdt
-from ai_agents.pipelines.chart_suggestion import run_cs
-from ai_agents.pipelines.data_cleaning import run_chart_pipeline
-from ai_agents.agent.middleware_node import run_middleware
+sys.path.append("..")
+#-- registration --
+from pipelines.registration.project_creation import run_project_creation
+from pipelines.registration.user_creation import run_user_creation
+from pipelines.registration.project_creation import run_project_creation
+#-- helper --
 from helpers.logger import get_logger
-from ai_agents.pipelines.data_flatted_weviate import run_dfw
-from ai_agents.pipelines.vectorization import run_v
-from ai_agents.pipelines.data_to_weviate import run_dtw
-from ai_agents.registration.user_login import run_user_login
+#-- processing --
+from pipelines.processing.data_type_finding import run_dtf
+from pipelines.processing.data_anomaly import run_cdt
+from pipelines.processing.chart_suggestion import run_cs
+from pipelines.processing.data_cleaning import run_chart_pipeline
+from pipelines.processing.data_flatted_weviate import run_dfw
+from pipelines.processing.vectorization import run_v
+from pipelines.processing.data_to_weviate import run_dtw
+#-- agent --
+from ai_agents.agent.middleware_node import run_middleware
+#-- user --
+from pipelines.user.user_login import run_user_login
 
 logger = get_logger(__name__)
 

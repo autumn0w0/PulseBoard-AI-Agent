@@ -1,3 +1,0 @@
-data_type_finding
-data_anomaly
-chart_suggestion
