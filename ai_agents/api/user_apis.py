@@ -1,12 +1,12 @@
 import os
 import sys
 from dotenv import load_dotenv
-from werkzeug.security import generate_password_hash,check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 sys.path.append("../..")
 from helpers.database.connection_to_db import connect_to_mongodb
 from helpers.logger import get_logger
 from pipelines.registration.user_creation import get_next_user_id, add_client_config
-from pipelines.registration.project_creation import get_next_project_id,create_project_object, create_mongodb_collections
+from pipelines.registration.project_creation import get_next_project_id, create_project_object, create_mongodb_collections
 
 logger = get_logger()
 # Load environment variables
@@ -189,6 +189,9 @@ def run_user_login(email: str, password: str) -> dict:
                 "message": "Error description"
             }
     """
+    # Initialize client as None for finally block
+    client = None
+    
     try:
         logger.info(f"Login attempt for email: {email}")
         
@@ -201,9 +204,9 @@ def run_user_login(email: str, password: str) -> dict:
                 "message": "Database connection failed"
             }
         
-        # Access the master database and user collection
-        db = MASTER_DB_NAME 
-        users_collection = USER_COLLECTION_NAME
+        # Access the master database and user collection - FIXED
+        db = client[MASTER_DB_NAME]  # Get the database object from client
+        users_collection = db[USER_COLLECTION_NAME]  # Get the collection object from database
         
         # Find user by email
         user = users_collection.find_one({"email": email})
@@ -233,8 +236,7 @@ def run_user_login(email: str, password: str) -> dict:
         user_data = {
             "user_id": user.get("user_id"),
             "email": user.get("email"),
-            "first_name": user.get("first_name"),
-            "last_name": user.get("last_name"),
+            "name": user.get("name"),  # Changed from first_name/last_name to name
             "created_at": user.get("created_at")
         }
         
@@ -254,3 +256,7 @@ def run_user_login(email: str, password: str) -> dict:
             "status": "failed",
             "message": f"Login error: {str(e)}"
         }
+    finally:
+        # Close MongoDB connection if it was established
+        if client:
+            client.close()
