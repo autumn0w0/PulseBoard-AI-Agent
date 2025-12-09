@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from dotenv import load_dotenv
 
 sys.path.append("../..")
@@ -24,18 +25,15 @@ def get_next_project_id(user_id, client_config):
     Returns:
         str: Next project ID (e.g., UID001PJ001, UID001PJ002, etc.)
     """
-    # Check if projects array exists and has items
     projects = client_config.get("projects", [])
     
     if not projects:
-        # No projects exist, start with PJ001
         return f"{user_id}PJ001"
     
     # Find the highest project number
     max_project_num = 0
     for project in projects:
         project_id = project.get("project_id", "")
-        # Extract the numeric part after "PJ" (e.g., "UID001PJ005" -> 5)
         if "PJ" in project_id:
             try:
                 project_num = int(project_id.split("PJ")[1])
@@ -49,7 +47,7 @@ def get_next_project_id(user_id, client_config):
 
 def create_project_object(project_id, project_name, domain):
     """
-    Create a project object with all required collections
+    Create a project object with all required collections and timestamps
     
     Args:
         project_id: Generated project ID
@@ -59,10 +57,15 @@ def create_project_object(project_id, project_name, domain):
     Returns:
         dict: Project object with all configurations
     """
+    # Get current timestamp
+    current_timestamp = datetime.utcnow()
+    
     project_obj = {
         "project_id": project_id,
         "name_of_project": project_name,
         "domain": domain,
+        "created_at": current_timestamp, 
+        "last_used_at": current_timestamp, 
         "mongodb": {
             "collections": {
                 f"{project_id}_charts": f"{project_id}_charts",
@@ -99,26 +102,21 @@ def create_mongodb_collections(user_id, project_id, mongodb_collections):
     Returns:
         dict: Dictionary with status and created collections list
     """
-    # Connect to MongoDB
     mongo_client = connect_to_mongodb()
     if not mongo_client:
         raise Exception("Failed to connect to MongoDB")
     
     try:
-        # Get the user's database (db_name is same as user_id)
         db = mongo_client[user_id]
-        
         created_collections = []
         
         # Create each collection
         for key, collection_name in mongodb_collections.items():
-            # Create collection (MongoDB creates it when you reference it)
-            # We'll insert and delete a dummy document to ensure it's created
             collection = db[collection_name]
             
             # Check if collection already exists
             if collection_name not in db.list_collection_names():
-                # Insert a dummy document and remove it to create the collection
+                # Insert and delete a dummy document to create the collection
                 dummy_doc = {"_temp": "dummy"}
                 result = collection.insert_one(dummy_doc)
                 collection.delete_one({"_id": result.inserted_id})
@@ -139,45 +137,6 @@ def create_mongodb_collections(user_id, project_id, mongodb_collections):
     finally:
         mongo_client.close()
 
-    """
-    Create a project object with all required collections
-    
-    Args:
-        project_id: Generated project ID
-        project_name: Name of the project
-        domain: Domain of the project
-    
-    Returns:
-        dict: Project object with all configurations
-    """
-    project_obj = {
-        "project_id": project_id,
-        "name_of_project": project_name,
-        "domain": domain,
-        "mongodb": {
-            "collections": {
-                f"{project_id}_charts": f"{project_id}_charts",
-                f"{project_id}_cleaned_data": f"{project_id}_cleaned_data",
-                f"{project_id}_cleaned_dt": f"{project_id}_cleaned_dt",
-                f"{project_id}_data": f"{project_id}_data",
-                f"{project_id}_data_type": f"{project_id}_data_type",
-                f"{project_id}_weaviate_cd": f"{project_id}_weaviate_cd",
-                f"{project_id}_weaviate_cdt": f"{project_id}_weaviate_cdt",
-                f"{project_id}_weaviate_vectors_cd": f"{project_id}_weaviate_vectors_cd",
-                f"{project_id}_weaviate_vectors_cdt": f"{project_id}_weaviate_vectors_cdt",
-            }
-        },
-        "weaviate": {
-            "collections": {
-                f"{project_id}_weviate_cd": f"{project_id}_weviate_cd",
-                f"{project_id}_weviate_cdt": f"{project_id}_weviate_cdt",
-
-            }
-        }
-    }
-    
-    return project_obj
-
 def run_project_creation(user_id, project_name, domain):
     """
     Main function to add a project to user's configuration and create collections
@@ -190,7 +149,6 @@ def run_project_creation(user_id, project_name, domain):
     Returns:
         dict: Dictionary containing updated client config, project info, and collections
     """
-    # Connect to MongoDB using existing connection function
     mongo_client = connect_to_mongodb()
     if not mongo_client:
         raise Exception("Failed to connect to MongoDB")
@@ -214,7 +172,7 @@ def run_project_creation(user_id, project_name, domain):
         # Generate next project ID
         project_id = get_next_project_id(user_id, client_config)
         
-        # Create project object
+        # Create project object with timestamps
         project_obj = create_project_object(project_id, project_name, domain)
         
         # Add project to the projects array
@@ -255,7 +213,6 @@ def run_project_creation(user_id, project_name, domain):
         print(f"Error during project creation: {e}")
         raise
     finally:
-        # Close MongoDB connection
         mongo_client.close()
 
 if __name__ == "__main__":
@@ -277,6 +234,8 @@ if __name__ == "__main__":
             print(f"Project ID: {result['project']['project_id']}")
             print(f"Project Name: {result['project']['name_of_project']}")
             print(f"Domain: {result['project']['domain']}")
+            print(f"Created At: {result['project']['created_at']}")
+            print(f"Last Used At: {result['project']['last_used_at']}")
             print(f"\nMongoDB Collections Created:")
             for collection in result['collections_created']:
                 print(f"  ✓ {collection}")
