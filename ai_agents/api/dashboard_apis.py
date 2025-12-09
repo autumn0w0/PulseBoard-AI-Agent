@@ -13,6 +13,7 @@ from pipelines.processing.data_flatted_weviate import run_dfw
 from pipelines.processing.vectorization import run_v
 from pipelines.processing.data_to_weviate import run_dtw
 from helpers.database.connection_to_db import connect_to_mongodb
+from helpers.database.connect_to_weaviate import connect_to_weaviatedb
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -441,3 +442,119 @@ def get_user_projects_count(user_id: str) -> Dict[str, int]:
     except Exception as e:
         logger.error(f"Error counting user projects: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to count projects: {str(e)}")
+    
+def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
+    """
+    Delete a project and all its associated data from MongoDB and Weaviate
+    
+    Args:
+        user_id: The user's unique identifier
+        project_id: The project's unique identifier
+        
+    Returns:
+        Dictionary containing deletion results
+        
+    Raises:
+        HTTPException: If project not found or deletion fails
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # Access the master database and client_config collection
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # First, find the project to get collection names
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        
+        if not client_config:
+            logger.warning(f"User not found: {user_id}")
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Find the specific project
+        project_to_delete = None
+        project_index = -1
+        for idx, project in enumerate(client_config.get("projects", [])):
+            if project.get("project_id") == project_id:
+                project_to_delete = project
+                project_index = idx
+                break
+        
+        if not project_to_delete:
+            logger.warning(f"Project not found: {project_id}")
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get database name for user
+        db_name = client_config.get("db_name", user_id)
+        
+        # Step 1: Delete MongoDB collections
+        mongo_collections_deleted = []
+        if "mongodb" in project_to_delete and "collections" in project_to_delete["mongodb"]:
+            mongo_collections = project_to_delete["mongodb"]["collections"]
+            
+            for collection_key, collection_name in mongo_collections.items():
+                try:
+                    # Access the user's database and drop the collection
+                    user_db = mongo_client[db_name]
+                    collection = user_db[collection_name]
+                    
+                    # Drop the collection
+                    collection.drop()
+                    mongo_collections_deleted.append(collection_name)
+                    logger.info(f"Deleted MongoDB collection: {collection_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete MongoDB collection {collection_name}: {str(e)}")
+        
+        # Step 2: Delete Weaviate collections
+        weaviate_collections_deleted = []
+        if "weaviate" in project_to_delete and "collections" in project_to_delete["weaviate"]:
+            weaviate_collections = project_to_delete["weaviate"]["collections"]
+            
+            try:
+                
+                # Connect to Weaviate
+                weaviate_client = connect_to_weaviatedb()
+                if weaviate_client:
+                    for collection_key, collection_name in weaviate_collections.items():
+                        try:
+                            # Delete Weaviate collection
+                            weaviate_client.collections.delete(collection_name)
+                            weaviate_collections_deleted.append(collection_name)
+                            logger.info(f"Deleted Weaviate collection: {collection_name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete Weaviate collection {collection_name}: {str(e)}")
+                else:
+                    logger.warning("Failed to connect to Weaviate")
+            except Exception as e:
+                logger.error(f"Error connecting to Weaviate: {str(e)}")
+        
+        # Step 3: Remove project from client_config
+        result = client_config_collection.update_one(
+            {"user_id": user_id},
+            {"$pull": {"projects": {"project_id": project_id}}}
+        )
+        
+        if result.modified_count == 0:
+            logger.error(f"Failed to remove project from client_config: {project_id}")
+            raise HTTPException(status_code=500, detail="Failed to remove project from configuration")
+        
+        logger.info(f"Successfully deleted project: {project_id}")
+        
+        return {
+            "project_id": project_id,
+            "project_name": project_to_delete.get("name_of_project", ""),
+            "mongo_collections_deleted": mongo_collections_deleted,
+            "weaviate_collections_deleted": weaviate_collections_deleted,
+            "total_mongo_collections": len(mongo_collections_deleted),
+            "total_weaviate_collections": len(weaviate_collections_deleted)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")

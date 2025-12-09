@@ -10,14 +10,13 @@ from pipelines.registration.project_creation import run_project_creation
 from pipelines.registration.user_creation import run_user_creation
 #-- helper --
 from helpers.logger import get_logger
-#-- processing --
-from ai_agents.api.bashboard_apis import run_pdp
 #-- agent --
 from ai_agents.agent.middleware_node import run_middleware
 #-- user --
 from ai_agents.api.user_apis import run_user_login
 #-- dashboard --
-from ai_agents.api.bashboard_apis import (
+from ai_agents.api.dashboard_apis import (
+    run_pdp,
     get_user_details,
     get_recent_projects,
     get_all_projects,
@@ -518,6 +517,57 @@ async def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         "service": "PulseBoard.ai API"
     }
+
+class ProjectDeleteRequest(BaseModel):
+    project_id: str
+    user_id: str  # Add user_id to the request for security
+
+@app.delete("/delete-project")
+async def delete_project_endpoint(request: ProjectDeleteRequest):
+    """
+    Delete a project and all its associated data
+    
+    Example request:
+    DELETE /delete-project
+    {
+        "user_id": "UID002",
+        "project_id": "UID002PJ001"
+    }
+    
+    Example response:
+    {
+        "status": "success",
+        "message": "Project deleted successfully",
+        "deleted_project": {
+            "project_id": "UID002PJ001",
+            "project_name": "My Analytics Project",
+            "mongo_collections_deleted": ["UID002PJ001_data", ...],
+            "weaviate_collections_deleted": ["UID002PJ001_weviate_cd", ...],
+            "total_mongo_collections": 9,
+            "total_weaviate_collections": 2
+        }
+    }
+    """
+    try:
+        logger.info(f"Deleting project: user_id={request.user_id}, project_id={request.project_id}")
+        
+        # Import the delete function
+        from ai_agents.api.dashboard_apis import delete_project
+        
+        deleted_data = delete_project(request.user_id, request.project_id)
+        
+        logger.info(f"Project deleted successfully: {request.project_id}")
+        return {
+            "status": "success",
+            "message": "Project deleted successfully",
+            "deleted_project": deleted_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in delete_project endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -415,6 +415,31 @@ def signup_page():
                     st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
+def delete_project_from_api(user_id: str, project_id: str):
+    """Delete project via API"""
+    try:
+        response = requests.delete(
+            f"{API_URL}/delete-project",
+            json={
+                "user_id": user_id,
+                "project_id": project_id
+            }
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
+            else:
+                return {"success": False, "error": data.get("message", "Failed to delete project")}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def home_page():
     """Render home page"""
     # Get user_id from session
@@ -500,35 +525,31 @@ def home_page():
     
     st.markdown("---")
     
-    # Recent Activity Section
+    # Recent Activity Section - Changed to list view
     st.markdown('<div class="section-title">📈 Recent Activity</div>', unsafe_allow_html=True)
     
     if st.session_state.projects_data:
         if len(st.session_state.projects_data) > 0:
-            # Create columns for project cards
-            cols = st.columns(min(3, len(st.session_state.projects_data)))
+            # Show up to 3 most recent projects in list view
+            recent_to_show = st.session_state.projects_data[:3]
             
-            for idx, project in enumerate(st.session_state.projects_data):
-                with cols[idx % len(cols)]:
-                    with st.container():
-                        st.markdown(f"""
-                            <div class="project-card">
-                                <div class="project-name">{project.get('name_of_project', 'Unnamed Project')}</div>
-                                <div class="project-domain">{project.get('domain', 'general').title()}</div>
-                                <div class="project-time">
-                                    <strong>Last Used:</strong> {format_timestamp(project.get('last_used_at', ''))}
-                                </div>
-                                <div class="project-time">
-                                    <strong>Created:</strong> {format_timestamp(project.get('created_at', ''))}
-                                </div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Project actions
+            for project in recent_to_show:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{project.get('name_of_project', 'Unnamed Project')}**")
+                        st.caption(f"Domain: {project.get('domain', 'general').title()} • ID: {project.get('project_id')}")
+                    
+                    with col2:
+                        st.caption(f"📅 Created: {format_timestamp(project.get('created_at', ''))}")
+                        st.caption(f"⏰ Last Used: {format_timestamp(project.get('last_used_at', ''))}")
+                    
+                    with col3:
                         project_id = project.get('project_id')
-                        col1_action, col2_action = st.columns(2)
-                        with col1_action:
-                            if st.button("📂 Open", key=f"open_{project_id}", use_container_width=True):
+                        col_open, col_delete = st.columns(2)
+                        with col_open:
+                            if st.button("📂", key=f"open_recent_{project_id}", help="Open Project", use_container_width=True):
                                 with st.spinner("Opening project..."):
                                     # Update last used timestamp
                                     update_result = update_project_last_used(project_id)
@@ -541,9 +562,26 @@ def home_page():
                                     else:
                                         st.error(f"Failed to open project: {update_result['error']}")
                         
-                        with col2_action:
-                            if st.button("⚙️ Settings", key=f"settings_{project_id}", use_container_width=True):
-                                st.info(f"Settings for {project.get('name_of_project')} coming soon!")
+                        with col_delete:
+                            if st.button("🗑️", key=f"delete_recent_{project_id}", help="Delete Project", use_container_width=True):
+                                # Show confirmation dialog
+                                if st.session_state.get(f"confirm_delete_{project_id}", False):
+                                    with st.spinner("Deleting project..."):
+                                        delete_result = delete_project_from_api(user_id, project_id)
+                                        if delete_result["success"]:
+                                            st.success(f"Project '{project.get('name_of_project')}' deleted successfully!")
+                                            # Refresh data
+                                            st.session_state.projects_data = None
+                                            st.session_state.all_projects = None
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to delete: {delete_result['error']}")
+                                else:
+                                    st.session_state[f"confirm_delete_{project_id}"] = True
+                                    st.warning(f"Click again to confirm deletion of '{project.get('name_of_project')}'")
+                                    st.rerun()
+                    
+                    st.divider()
         else:
             st.markdown("""
                 <div class="empty-state">
@@ -552,7 +590,7 @@ def home_page():
                 </div>
             """, unsafe_allow_html=True)
     else:
-        st.info("Loading recent projects...")
+        st.info("No recent projects...")
     
     st.markdown("---")
     
@@ -576,15 +614,36 @@ def home_page():
                     
                     with col3:
                         project_id = project.get('project_id')
-                        if st.button("Open", key=f"open_all_{project_id}", use_container_width=True):
-                            with st.spinner("Opening..."):
-                                update_result = update_project_last_used(project_id)
-                                if update_result["success"]:
-                                    st.success(f"Opening project...")
-                                    st.session_state.projects_data = None
-                                    st.rerun()
+                        col_open, col_delete = st.columns(2)
+                        with col_open:
+                            if st.button("📂", key=f"open_all_{project_id}", help="Open Project", use_container_width=True):
+                                with st.spinner("Opening..."):
+                                    update_result = update_project_last_used(project_id)
+                                    if update_result["success"]:
+                                        st.success(f"Opening project...")
+                                        st.session_state.projects_data = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to open: {update_result['error']}")
+                        
+                        with col_delete:
+                            if st.button("🗑️", key=f"delete_all_{project_id}", help="Delete Project", use_container_width=True):
+                                # Show confirmation dialog
+                                if st.session_state.get(f"confirm_delete_all_{project_id}", False):
+                                    with st.spinner("Deleting project..."):
+                                        delete_result = delete_project_from_api(user_id, project_id)
+                                        if delete_result["success"]:
+                                            st.success(f"Project '{project.get('name_of_project')}' deleted successfully!")
+                                            # Refresh data
+                                            st.session_state.projects_data = None
+                                            st.session_state.all_projects = None
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to delete: {delete_result['error']}")
                                 else:
-                                    st.error(f"Failed to open: {update_result['error']}")
+                                    st.session_state[f"confirm_delete_all_{project_id}"] = True
+                                    st.warning(f"Click again to confirm deletion of '{project.get('name_of_project')}'")
+                                    st.rerun()
                     
                     st.divider()
         else:
@@ -595,7 +654,7 @@ def home_page():
                 </div>
             """, unsafe_allow_html=True)
     else:
-        st.info("Loading all projects...")
+        st.info("No projects aviable...")
     
     # Empty space at bottom
     st.markdown("<br><br>", unsafe_allow_html=True)
