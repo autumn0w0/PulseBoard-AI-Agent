@@ -1,8 +1,19 @@
 import re
-from fastapi import FastAPI, HTTPException
+from fastapi import (
+    FastAPI, 
+    HTTPException,
+    UploadFile, 
+    File, 
+    Form, 
+    HTTPException)
 from bson import ObjectId
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import (
+    BaseModel, 
+    EmailStr, 
+    field_validator)
 from typing import Dict, Any
+import pandas as pd
+import io
 import sys
 sys.path.append("..")
 #-- registration --
@@ -10,6 +21,7 @@ from pipelines.registration.project_creation import run_project_creation
 from pipelines.registration.user_creation import run_user_creation
 #-- helper --
 from helpers.logger import get_logger
+from helpers.database.connection_to_db import connect_to_mongodb
 #-- agent --
 from ai_agents.agent.middleware_node import run_middleware
 #-- user --
@@ -21,7 +33,9 @@ from ai_agents.api.dashboard_apis import (
     get_recent_projects,
     get_all_projects,
     update_project_last_used,
-    get_user_projects_count
+    get_user_projects_count,
+    upload_data_to_project,
+    get_project_upload_status
 )
 
 logger = get_logger(__name__)
@@ -568,6 +582,279 @@ async def delete_project_endpoint(request: ProjectDeleteRequest):
     except Exception as e:
         logger.error(f"Error in delete_project endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+    
+@app.post("/upload-data/{project_id}")
+async def upload_data(
+    project_id: str,
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    file_type: str = Form("auto")
+):
+    """
+    Upload data file to a project
+    
+    Example request:
+    POST /upload-data/UID002PJ001
+    Form data:
+    - file: data.csv
+    - user_id: UID002
+    - file_type: csv (optional, can be: csv, excel, json, auto)
+    
+    Example response:
+    {
+        "status": "success",
+        "message": "Data uploaded successfully",
+        "records_inserted": 150,
+        "collection_name": "UID002PJ001_data"
+    }
+    """
+    try:
+        logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
+        
+        # Validate project belongs to user
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Check if project exists and belongs to user
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        if not client_config:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        project_exists = False
+        for project in client_config.get("projects", []):
+            if project.get("project_id") == project_id:
+                project_exists = True
+                break
+        
+        if not project_exists:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Read file content
+        contents = await file.read()
+        
+        # Determine file type
+        if file_type == "auto":
+            # Auto-detect based on file extension
+            filename = file.filename.lower()
+            if filename.endswith('.csv'):
+                file_type = 'csv'
+            elif filename.endswith(('.xlsx', '.xls')):
+                file_type = 'excel'
+            elif filename.endswith('.json'):
+                file_type = 'json'
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported file type")
+        
+        # Parse data based on file type
+        df = None
+        try:
+            if file_type == 'csv':
+                df = pd.read_csv(io.BytesIO(contents))
+            elif file_type == 'excel':
+                df = pd.read_excel(io.BytesIO(contents))
+            elif file_type == 'json':
+                df = pd.read_json(io.BytesIO(contents))
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported file type")
+        except Exception as e:
+            logger.error(f"Error parsing file: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
+        
+        # Convert dataframe to list of dictionaries
+        records = df.to_dict('records')
+        
+        if not records:
+            raise HTTPException(status_code=400, detail="No data found in file")
+        
+        # Get user's database
+        db_name = client_config.get("db_name", user_id)
+        collection_name = f"{project_id}_data"
+        
+        # Insert data into MongoDB
+        user_db = mongo_client[db_name]
+        collection = user_db[collection_name]
+        
+        # Clear existing data if any
+        collection.delete_many({})
+        
+        # Insert new data
+        result = collection.insert_many(records)
+        records_inserted = len(result.inserted_ids)
+        
+        logger.info(f"Uploaded {records_inserted} records to {collection_name}")
+        
+        return {
+            "status": "success",
+            "message": "Data uploaded successfully",
+            "records_inserted": records_inserted,
+            "collection_name": collection_name,
+            "columns": list(df.columns),
+            "sample_data": records[:5] if records else []
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload data: {str(e)}")
+
+# Optional: Add an endpoint to get upload status/progress
+@app.get("/upload-status/{project_id}")
+async def get_upload_status(project_id: str, user_id: str):
+    """
+    Check if project has data uploaded
+    
+    Example response:
+    {
+        "has_data": true,
+        "records_count": 150,
+        "last_uploaded": "2025-01-01T12:00:00Z"
+    }
+    """
+    try:
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Check if project exists
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        if not client_config:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get database name
+        db_name = client_config.get("db_name", user_id)
+        collection_name = f"{project_id}_data"
+        
+        # Check if collection exists and has data
+        user_db = mongo_client[db_name]
+        if collection_name in user_db.list_collection_names():
+            collection = user_db[collection_name]
+            count = collection.count_documents({})
+            
+            # Get last document's upload time if available
+            last_doc = collection.find_one(sort=[("_id", -1)])
+            last_uploaded = None
+            if last_doc and "_id" in last_doc:
+                last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
+            
+            return {
+                "has_data": count > 0,
+                "records_count": count,
+                "last_uploaded": last_uploaded,
+                "collection_name": collection_name
+            }
+        else:
+            return {
+                "has_data": False,
+                "records_count": 0,
+                "collection_name": collection_name
+            }
+            
+    except Exception as e:
+        logger.error(f"Error checking upload status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to check upload status: {str(e)}")
+    
+@app.post("/upload-data/{project_id}")
+async def upload_data(
+    project_id: str,
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    file_type: str = Form("auto")
+):
+    """
+    Upload data file to a project
+    
+    Example request:
+    POST /upload-data/UID002PJ001
+    Form data:
+    - file: data.csv
+    - user_id: UID002
+    - file_type: csv (optional, can be: csv, excel, json, auto)
+    
+    Example response:
+    {
+        "status": "success",
+        "message": "Data uploaded successfully",
+        "records_inserted": 150,
+        "collection_name": "UID002PJ001_data"
+    }
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # Read file content
+        contents = await file.read()
+        
+        # Create a file-like object for the service
+        class FileWrapper:
+            def __init__(self, content, filename):
+                self.file = content
+                self.filename = filename
+        
+        file_wrapper = FileWrapper(contents, file.filename)
+        
+        # Call service function
+        result = upload_data_to_project(
+            mongo_client=mongo_client,
+            project_id=project_id,
+            user_id=user_id,
+            file=file_wrapper,
+            file_type=file_type
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload data: {str(e)}")
+
+
+@app.get("/upload-status/{project_id}")
+async def get_upload_status(project_id: str, user_id: str):
+    """
+    Check if project has data uploaded
+    
+    Example response:
+    {
+        "has_data": true,
+        "records_count": 150,
+        "last_uploaded": "2025-01-01T12:00:00Z"
+    }
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # Call service function
+        result = get_project_upload_status(
+            mongo_client=mongo_client,
+            project_id=project_id,
+            user_id=user_id
+        )
+        
+        return result
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking upload status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to check upload status: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -558,3 +558,210 @@ def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error deleting project: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+
+# services/upload_service.py
+import io
+import pandas as pd
+from typing import Dict, List, Any, Optional, Tuple
+from fastapi import HTTPException, UploadFile
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def validate_project_access(
+    mongo_client,
+    user_id: str,
+    project_id: str
+) -> Tuple[Dict, str]:
+    """
+    Validate if project exists and belongs to user
+    
+    Returns:
+        Tuple of (client_config, db_name)
+    
+    Raises:
+        HTTPException: If validation fails
+    """
+    master_db = mongo_client["master"]
+    client_config_collection = master_db["client_config"]
+    
+    client_config = client_config_collection.find_one({"user_id": user_id})
+    if not client_config:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    project_exists = any(
+        project.get("project_id") == project_id 
+        for project in client_config.get("projects", [])
+    )
+    
+    if not project_exists:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    db_name = client_config.get("db_name", user_id)
+    return client_config, db_name
+
+
+def detect_file_type(filename: str, file_type: str) -> str:
+    """
+    Detect file type based on extension or provided type
+    
+    Args:
+        filename: Name of the uploaded file
+        file_type: Provided file type or 'auto'
+    
+    Returns:
+        Detected file type (csv, excel, json)
+    
+    Raises:
+        HTTPException: If file type is unsupported
+    """
+    if file_type != "auto":
+        return file_type
+    
+    filename_lower = filename.lower()
+    if filename_lower.endswith('.csv'):
+        return 'csv'
+    elif filename_lower.endswith(('.xlsx', '.xls')):
+        return 'excel'
+    elif filename_lower.endswith('.json'):
+        return 'json'
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+
+def parse_file_to_dataframe(contents: bytes, file_type: str) -> pd.DataFrame:
+    """
+    Parse file contents into pandas DataFrame
+    
+    Args:
+        contents: File contents as bytes
+        file_type: Type of file (csv, excel, json)
+    
+    Returns:
+        Parsed DataFrame
+    
+    Raises:
+        HTTPException: If parsing fails
+    """
+    try:
+        if file_type == 'csv':
+            return pd.read_csv(io.BytesIO(contents))
+        elif file_type == 'excel':
+            return pd.read_excel(io.BytesIO(contents))
+        elif file_type == 'json':
+            return pd.read_json(io.BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+    except Exception as e:
+        logger.error(f"Error parsing file: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
+
+
+def upload_data_to_project(
+    mongo_client,
+    project_id: str,
+    user_id: str,
+    file: UploadFile,
+    file_type: str = "auto"
+) -> Dict[str, Any]:
+    """
+    Upload data file to a project
+    
+    Args:
+        mongo_client: MongoDB client instance
+        project_id: Project ID
+        user_id: User ID
+        file: Uploaded file
+        file_type: File type (csv, excel, json, auto)
+    
+    Returns:
+        Dict with upload results
+    """
+    logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
+    
+    # Validate project access
+    client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
+    
+    # Read file content
+    contents = file.file.read() if hasattr(file, 'file') else file
+    
+    # Detect file type
+    detected_file_type = detect_file_type(file.filename, file_type)
+    
+    # Parse file to DataFrame
+    df = parse_file_to_dataframe(contents, detected_file_type)
+    
+    # Convert to records
+    records = df.to_dict('records')
+    
+    if not records:
+        raise HTTPException(status_code=400, detail="No data found in file")
+    
+    # Prepare collection
+    collection_name = f"{project_id}_data"
+    user_db = mongo_client[db_name]
+    collection = user_db[collection_name]
+    
+    # Clear existing data and insert new data
+    collection.delete_many({})
+    result = collection.insert_many(records)
+    records_inserted = len(result.inserted_ids)
+    
+    logger.info(f"Uploaded {records_inserted} records to {collection_name}")
+    
+    return {
+        "status": "success",
+        "message": "Data uploaded successfully",
+        "records_inserted": records_inserted,
+        "collection_name": collection_name,
+        "columns": list(df.columns),
+        "sample_data": records[:5] if records else []
+    }
+
+
+def get_project_upload_status(
+    mongo_client,
+    project_id: str,
+    user_id: str
+) -> Dict[str, Any]:
+    """
+    Check if project has data uploaded
+    
+    Args:
+        mongo_client: MongoDB client instance
+        project_id: Project ID
+        user_id: User ID
+    
+    Returns:
+        Dict with upload status information
+    """
+    # Validate project access
+    client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
+    
+    # Check collection
+    collection_name = f"{project_id}_data"
+    user_db = mongo_client[db_name]
+    
+    if collection_name not in user_db.list_collection_names():
+        return {
+            "has_data": False,
+            "records_count": 0,
+            "collection_name": collection_name
+        }
+    
+    collection = user_db[collection_name]
+    count = collection.count_documents({})
+    
+    # Get last document's upload time if available
+    last_uploaded = None
+    last_doc = collection.find_one(sort=[("_id", -1)])
+    if last_doc and "_id" in last_doc:
+        last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
+    
+    return {
+        "has_data": count > 0,
+        "records_count": count,
+        "last_uploaded": last_uploaded,
+        "collection_name": collection_name
+    }

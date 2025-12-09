@@ -30,6 +30,8 @@ if 'projects_data' not in st.session_state:
     st.session_state.projects_data = None
 if 'all_projects' not in st.session_state:
     st.session_state.all_projects = None
+if 'creating_project' not in st.session_state:
+    st.session_state.creating_project = False
 
 # Custom CSS for better styling (theme-aware)
 st.markdown("""
@@ -439,6 +441,330 @@ def delete_project_from_api(user_id: str, project_id: str):
         return {"success": False, "error": "Cannot connect to server."}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    
+def create_project_page():
+    """Render create project page"""
+    
+    # Get user info from session
+    user_id = st.session_state.user_data.get("user_id")
+    user_name = st.session_state.user_data.get("name", "User")
+    
+    # Track project creation and upload states
+    if 'project_created' not in st.session_state:
+        st.session_state.project_created = False
+    if 'created_project_data' not in st.session_state:
+        st.session_state.created_project_data = None
+    if 'uploading_data' not in st.session_state:
+        st.session_state.uploading_data = False
+    if 'upload_complete' not in st.session_state:
+        st.session_state.upload_complete = False
+    if 'upload_result' not in st.session_state:
+        st.session_state.upload_result = None
+    
+    # Back button in sidebar
+    with st.sidebar:
+        st.markdown(f"### Creating New Project")
+        st.markdown(f"**User:** {user_name}")
+        st.markdown(f"**User ID:** {user_id}")
+        
+        st.markdown("---")
+        
+        if st.button("← Back to Dashboard", use_container_width=True):
+            # Reset all states
+            st.session_state.creating_project = False
+            st.session_state.project_created = False
+            st.session_state.created_project_data = None
+            st.session_state.uploading_data = False
+            st.session_state.upload_complete = False
+            st.session_state.upload_result = None
+            st.rerun()
+    
+    # Main content
+    st.markdown(f"# 📊 Create New Project")
+    st.markdown("---")
+    
+    # Show upload section if project was created
+    if st.session_state.project_created and st.session_state.created_project_data:
+        project_name_created = st.session_state.created_project_data.get("project_name")
+        project_id = st.session_state.created_project_data.get("project_id")
+        
+        st.success(f"✅ Project '{project_name_created}' created successfully!")
+        st.info(f"**Project ID:** {project_id}")
+        
+        # Show upload form
+        st.markdown("---")
+        st.markdown("### 📁 Upload Your Data")
+        st.markdown("Upload your dataset to start analyzing. Supported formats: CSV, Excel (XLS/XLSX), JSON")
+        
+        if not st.session_state.upload_complete:
+            # Upload form
+            with st.form("upload_data_form"):
+                uploaded_file = st.file_uploader(
+                    "Choose a file",
+                    type=["csv", "xlsx", "xls", "json"],
+                    help="Upload CSV, Excel, or JSON files"
+                )
+                
+                # File type selection
+                if uploaded_file:
+                    filename = uploaded_file.name.lower()
+                    if filename.endswith('.csv'):
+                        default_type = "csv"
+                    elif filename.endswith(('.xlsx', '.xls')):
+                        default_type = "excel"
+                    elif filename.endswith('.json'):
+                        default_type = "json"
+                    else:
+                        default_type = "auto"
+                    
+                    file_type = st.selectbox(
+                        "File Type",
+                        options=["auto", "csv", "excel", "json"],
+                        index=0 if default_type == "auto" else ["auto", "csv", "excel", "json"].index(default_type),
+                        help="Auto-detect or manually select file type"
+                    )
+                
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    upload_submitted = st.form_submit_button(
+                        "📤 Upload Data",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not uploaded_file
+                    )
+                
+                if upload_submitted and uploaded_file:
+                    st.session_state.uploading_data = True
+                    
+                    with st.spinner("Uploading and processing data..."):
+                        try:
+                            # Prepare form data
+                            files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                            data = {
+                                "user_id": user_id,
+                                "file_type": file_type
+                            }
+                            
+                            # Call upload API
+                            response = requests.post(
+                                f"{API_URL}/upload-data/{project_id}",
+                                files=files,
+                                data=data
+                            )
+                            
+                            if response.status_code == 200:
+                                upload_data = response.json()
+                                if upload_data.get("status") == "success":
+                                    st.session_state.upload_complete = True
+                                    st.session_state.upload_result = upload_data
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Upload failed: {upload_data.get('message')}")
+                            else:
+                                st.error(f"❌ Upload failed with status: {response.status_code}")
+                                
+                        except requests.exceptions.ConnectionError:
+                            st.error("❌ Cannot connect to server.")
+                        except Exception as e:
+                            st.error(f"❌ Error uploading file: {str(e)}")
+        
+        # Show upload success
+        if st.session_state.upload_complete and st.session_state.upload_result:
+            records_inserted = st.session_state.upload_result.get("records_inserted", 0)
+            columns = st.session_state.upload_result.get("columns", [])
+            
+            st.success(f"✅ Data uploaded successfully! ({records_inserted} records)")
+            
+            # Show data preview
+            with st.expander("📊 Data Preview", expanded=True):
+                if columns:
+                    st.write(f"**Columns:** {', '.join(columns)}")
+                
+                sample_data = st.session_state.upload_result.get("sample_data", [])
+                if sample_data:
+                    st.write("**Sample data:**")
+                    st.json(sample_data[:3])  # Show first 3 records
+            
+            # Next steps
+            st.markdown("---")
+            st.markdown("### 🚀 Ready to Analyze!")
+            st.markdown("""
+            Your data has been uploaded and is ready for analysis. You can now:
+            
+            1. **Run Data Processing** - Automatically analyze data types and structure
+            2. **Generate Insights** - Get AI-powered insights from your data
+            3. **Create Charts** - Visualize your data with smart chart suggestions
+            """)
+            
+            # Action buttons
+            col1_action, col2_action, col3_action = st.columns(3)
+            with col1_action:
+                if st.button("🏠 Go to Dashboard", use_container_width=True):
+                    # Reset all states
+                    st.session_state.creating_project = False
+                    st.session_state.project_created = False
+                    st.session_state.created_project_data = None
+                    st.session_state.uploading_data = False
+                    st.session_state.upload_complete = False
+                    st.session_state.upload_result = None
+                    st.session_state.projects_data = None
+                    st.session_state.all_projects = None
+                    st.rerun()
+            
+            with col2_action:
+                if st.button("🔍 Run Data Processing", type="primary", use_container_width=True):
+                    st.info("Data processing pipeline coming soon!")
+                    # Here you would call the data processing pipeline
+            
+            with col3_action:
+                if st.button("➕ Upload More Data", use_container_width=True):
+                    st.session_state.uploading_data = False
+                    st.session_state.upload_complete = False
+                    st.session_state.upload_result = None
+                    st.rerun()
+        
+        return  # Don't show the project creation form
+    
+    # Create project form (only shown if no project was just created)
+    with st.form("create_project_form"):
+        st.subheader("Project Details")
+        
+        # Project name
+        project_name = st.text_input(
+            "Project Name *",
+            placeholder="Enter a descriptive name for your project",
+            help="e.g., Sales Analysis 2024, Customer Behavior Dashboard"
+        )
+        
+        # Domain selection
+        domain_options = [
+            "finance", "healthcare", "ecommerce", "education", 
+            "entertainment", "technology", "marketing", "manufacturing",
+            "logistics", "retail", "telecom", "energy", "other"
+        ]
+        
+        domain = st.selectbox(
+            "Domain *",
+            options=domain_options,
+            help="Select the primary domain for your data analysis"
+        )
+        
+        # Form submission
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            submitted = st.form_submit_button(
+                "Create Project",
+                type="primary",
+                use_container_width=True
+            )
+        
+        if submitted:
+            # Validation
+            if not project_name or not project_name.strip():
+                st.error("Please enter a project name")
+            elif not domain:
+                st.error("Please select a domain")
+            else:
+                with st.spinner("Creating project..."):
+                    try:
+                        # Call create project API
+                        response = requests.post(
+                            f"{API_URL}/create-project",
+                            json={
+                                "user_id": user_id,
+                                "project_name": project_name.strip(),
+                                "domain": domain
+                            }
+                        )
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            if data.get("status") == "success":
+                                project_id = data.get("project", {}).get("project_id")
+                                project_name_created = data.get("project", {}).get("name_of_project")
+                                
+                                # Store success data in session
+                                st.session_state.project_created = True
+                                st.session_state.created_project_data = {
+                                    "project_id": project_id,
+                                    "project_name": project_name_created
+                                }
+                                st.rerun()
+                                
+                            else:
+                                error_msg = data.get("message", "Failed to create project")
+                                st.error(f"❌ {error_msg}")
+                        elif response.status_code == 404:
+                            st.error("❌ User not found. Please log in again.")
+                        elif response.status_code == 409:
+                            st.error("❌ A project with this name already exists.")
+                        else:
+                            st.error(f"❌ Failed to create project (Status: {response.status_code})")
+                            
+                    except requests.exceptions.ConnectionError:
+                        st.error("❌ Cannot connect to server. Please make sure the API server is running.")
+                    except Exception as e:
+                        st.error(f"❌ Error creating project: {str(e)}")
+
+def create_project_via_api(user_id: str, project_name: str, domain: str):
+    """Create new project via API"""
+    try:
+        response = requests.post(
+            f"{API_URL}/create-project",
+            json={
+                "user_id": user_id,
+                "project_name": project_name,
+                "domain": domain
+            }
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
+            elif data.get("status") == "user_not_found":
+                return {"success": False, "error": "User not found"}
+            else:
+                return {"success": False, "error": data.get("message", "Failed to create project")}
+        elif response.status_code == 404:
+            return {"success": False, "error": "User not found"}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    
+def upload_data_to_project(project_id: str, user_id: str, file, file_type: str = "auto"):
+    """Upload data file to project via API"""
+    try:
+        # Prepare form data
+        files = {"file": (file.name, file.getvalue())}
+        data = {
+            "user_id": user_id,
+            "file_type": file_type
+        }
+        
+        response = requests.post(
+            f"{API_URL}/upload-data/{project_id}",
+            files=files,
+            data=data
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
+            else:
+                return {"success": False, "error": data.get("message", "Upload failed")}
+        else:
+            return {"success": False, "error": f"Upload failed with status: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def home_page():
     """Render home page"""
@@ -473,7 +799,7 @@ def home_page():
             else:
                 st.error(f"Failed to load projects: {all_result['error']}")
     
-    # Sidebar
+    # Sidebar - Simplified (removed quick actions)
     with st.sidebar:
         st.markdown(f"### 👋 Welcome, {user_name.split()[0] if user_name else 'User'}!")
         
@@ -484,24 +810,9 @@ def home_page():
             st.write(f"**Email:** {st.session_state.user_details.get('email', 'N/A')}")
             st.write(f"**User ID:** {user_id}")
         
-        # Quick actions
-        st.markdown("---")
-        st.markdown("#### 🎯 Quick Actions")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Refresh", use_container_width=True):
-                st.session_state.projects_data = None
-                st.session_state.all_projects = None
-                st.rerun()
-        
-        with col2:
-            if st.button("📊 New Project", use_container_width=True):
-                st.info("Create Project feature coming soon!")
-        
         st.markdown("---")
         
-        # Logout button
+        # Only logout button remains
         if st.button("🚪 Logout", type="secondary", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.user_data = None
@@ -512,8 +823,8 @@ def home_page():
             st.rerun()
     
     # Main content area
-    # Welcome header
-    col1, col2 = st.columns([3, 1])
+    # Welcome header with New Project button
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         st.markdown(f"# 👋 Welcome, {user_name}!")
         st.markdown(f"#### Your intelligent analytics dashboard")
@@ -523,7 +834,14 @@ def home_page():
             total_projects = len(st.session_state.all_projects)
             st.metric("Total Projects", total_projects)
     
+    with col3:
+        if st.button("📊 New Project", type="primary", use_container_width=True):
+            st.session_state.creating_project = True
+            st.rerun()
+    
     st.markdown("---")
+    
+    # ... rest of the home_page function remains the same ...
     
     # Recent Activity Section - Changed to list view
     st.markdown('<div class="section-title">📈 Recent Activity</div>', unsafe_allow_html=True)
@@ -664,7 +982,10 @@ def main():
     
     # Check if user is logged in
     if st.session_state.logged_in:
-        home_page()
+        if st.session_state.creating_project:
+            create_project_page()
+        else:
+            home_page()
     else:
         # Show login or signup based on current page
         if st.session_state.current_page == "login":
