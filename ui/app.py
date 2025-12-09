@@ -4,12 +4,19 @@ import requests
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+from typing import Dict, Any, Optional, Tuple
+import json
+import asyncio
+from functools import lru_cache
 
 # Load environment variables
 load_dotenv()
 
-# API Configuration
+# ============================================
+# Configuration & Constants
+# ============================================
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+SESSION_TIMEOUT = 1800  # 30 minutes
 
 # Page configuration
 st.set_page_config(
@@ -19,156 +26,89 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Session state initialization
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user_data' not in st.session_state:
-    st.session_state.user_data = None
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = "login"
-if 'projects_data' not in st.session_state:
-    st.session_state.projects_data = None
-if 'all_projects' not in st.session_state:
-    st.session_state.all_projects = None
-if 'creating_project' not in st.session_state:
-    st.session_state.creating_project = False
-
-# Custom CSS for better styling (theme-aware)
-st.markdown("""
-    <style>
-    .main {
-        padding: 0rem 1rem;
-    }
-    .stButton > button {
-        margin-top: 10px;
-    }
-    .login-container {
-        max-width: 400px;
-        margin: 0 auto;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .signup-container {
-        max-width: 500px;
-        margin: 0 auto;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .welcome-title {
-        text-align: center;
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: var(--primary-color);
-        margin-bottom: 1rem;
-    }
-    .welcome-subtitle {
-        text-align: center;
-        font-size: 1.2rem;
-        color: var(--text-color);
-        margin-bottom: 2rem;
-    }
-    .success-message {
-        padding: 10px;
-        background-color: #d4edda;
-        color: #155724;
-        border-radius: 5px;
-        margin-bottom: 20px;
-    }
-    .error-message {
-        padding: 10px;
-        background-color: #f8d7da;
-        color: #721c24;
-        border-radius: 5px;
-        margin-bottom: 20px;
-    }
-    .form-button {
-        width: 100% !important;
-    }
-    .back-button-container {
-        text-align: center;
-        margin-top: 20px;
-    }
-    .project-card {
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 15px;
-        background-color: var(--background-color);
-        border: 1px solid var(--secondary-background-color);
-        transition: transform 0.2s;
-    }
-    .project-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    }
-    .project-name {
-        font-size: 1.2rem;
-        font-weight: bold;
-        margin-bottom: 5px;
-        color: var(--text-color);
-    }
-    .project-domain {
-        font-size: 0.9rem;
-        color: var(--text-color);
-        background-color: var(--secondary-background-color);
-        padding: 3px 8px;
-        border-radius: 12px;
-        display: inline-block;
-        margin-bottom: 10px;
-    }
-    .project-time {
-        font-size: 0.8rem;
-        color: var(--text-color);
-        opacity: 0.7;
-    }
-    .empty-state {
-        text-align: center;
-        padding: 40px;
-        color: var(--text-color);
-        opacity: 0.7;
-    }
-    .section-title {
-        font-size: 1.5rem;
-        font-weight: bold;
-        margin-bottom: 20px;
-        color: var(--text-color);
-        padding-bottom: 10px;
-        border-bottom: 2px solid var(--primary-color);
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-def login_user(email: str, password: str):
-    """Authenticate user via API"""
-    try:
-        response = requests.post(
-            f"{API_URL}/user-login",
-            json={
-                "email": email,
-                "password": password
-            }
-        )
+# ============================================
+# Session State Management
+# ============================================
+class SessionStateManager:
+    """Centralized session state management"""
+    
+    @staticmethod
+    def initialize():
+        """Initialize all session state variables"""
+        defaults = {
+            'logged_in': False,
+            'user_data': None,
+            'user_details': None,
+            'current_page': "login",
+            'projects_data': None,
+            'all_projects': None,
+            'creating_project': False,
+            'project_created': False,
+            'created_project_data': None,
+            'uploading_data': False,
+            'upload_complete': False,
+            'upload_result': None,
+            'signup_success': False,
+            'last_refresh': None
+        }
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            else:
-                return {"success": False, "error": data.get("message", "Login failed")}
-        else:
-            return {"success": False, "error": f"Login failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server. Please make sure the API server is running."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        for key, value in defaults.items():
+            if key not in st.session_state:
+                st.session_state[key] = value
+    
+    @staticmethod
+    def clear_user_session():
+        """Clear all user-related session data"""
+        keys_to_clear = [
+            'logged_in', 'user_data', 'user_details',
+            'projects_data', 'all_projects', 'last_refresh'
+        ]
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        SessionStateManager.initialize()
 
-def create_user(email: str, first_name: str, last_name: str, password: str):
-    """Create new user via API"""
-    try:
-        response = requests.post(
-            f"{API_URL}/create-user",
+# ============================================
+# API Client
+# ============================================
+class APIClient:
+    """Centralized API client with error handling and caching"""
+    
+    @staticmethod
+    def _make_request(method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+        """Generic request handler with error handling"""
+        try:
+            url = f"{API_URL}{endpoint}"
+            response = requests.request(method, url, **kwargs, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            raise ConnectionError("Cannot connect to server. Please make sure the API server is running.")
+        except requests.exceptions.Timeout:
+            raise TimeoutError("Request timed out. Please try again.")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise ValueError("Resource not found")
+            elif e.response.status_code == 409:
+                raise ValueError("Resource already exists")
+            else:
+                raise
+        except Exception as e:
+            raise Exception(f"API request failed: {str(e)}")
+    
+    @staticmethod
+    def login(email: str, password: str) -> Dict[str, Any]:
+        """Authenticate user"""
+        return APIClient._make_request(
+            "POST", "/user-login",
+            json={"email": email, "password": password}
+        )
+    
+    @staticmethod
+    def create_user(email: str, first_name: str, last_name: str, password: str) -> Dict[str, Any]:
+        """Create new user"""
+        return APIClient._make_request(
+            "POST", "/create-user",
             json={
                 "email": email,
                 "first_name": first_name,
@@ -176,822 +116,757 @@ def create_user(email: str, first_name: str, last_name: str, password: str):
                 "password": password
             }
         )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            else:
-                return {"success": False, "error": data.get("message", "Signup failed")}
-        elif response.status_code == 409:
-            return {"success": False, "error": "User already exists with this email."}
-        else:
-            return {"success": False, "error": f"Signup failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server. Please make sure the API server is running."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def get_user_details_from_api(user_id: str):
-    """Get user details from API"""
-    try:
-        response = requests.get(f"{API_URL}/user-details/{user_id}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data.get("user", {})}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to get user details")}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def get_recent_projects_from_api(user_id: str):
-    """Get recent projects from API"""
-    try:
-        response = requests.get(f"{API_URL}/recent-projects/{user_id}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data.get("projects", [])}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to get projects")}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def get_all_projects_from_api(user_id: str):
-    """Get all projects from API"""
-    try:
-        response = requests.get(f"{API_URL}/all-projects/{user_id}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data.get("projects", [])}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to get projects")}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def update_project_last_used(project_id: str):
-    """Update project last used timestamp"""
-    try:
-        response = requests.put(
-            f"{API_URL}/update-project-last-used",
+    
+    @staticmethod
+    def get_user_details(user_id: str) -> Dict[str, Any]:
+        """Get user details"""
+        return APIClient._make_request("GET", f"/user-details/{user_id}")
+    
+    @staticmethod
+    def get_recent_projects(user_id: str) -> Dict[str, Any]:
+        """Get recent projects"""
+        return APIClient._make_request("GET", f"/recent-projects/{user_id}")
+    
+    @staticmethod
+    def get_all_projects(user_id: str) -> Dict[str, Any]:
+        """Get all projects"""
+        return APIClient._make_request("GET", f"/all-projects/{user_id}")
+    
+    @staticmethod
+    def update_project_last_used(project_id: str) -> Dict[str, Any]:
+        """Update project last used timestamp"""
+        return APIClient._make_request(
+            "PUT", "/update-project-last-used",
             json={"project_id": project_id}
         )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to update project")}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def format_timestamp(timestamp_str: str) -> str:
-    """Format ISO timestamp to readable format"""
-    try:
-        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        return dt.strftime("%b %d, %Y %I:%M %p")
-    except:
-        return timestamp_str
-
-def login_page():
-    """Render login page"""
-    # Welcome title
-    st.markdown('<div class="welcome-title">Welcome to PulseBoard.ai</div>', unsafe_allow_html=True)
-    st.markdown('<div class="welcome-subtitle">Intelligent insights for your business</div>', unsafe_allow_html=True)
     
-    # Create a container for the login form
-    with st.container():
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown('<div class="login-container">', unsafe_allow_html=True)
-            
-            # Display success message if redirected from signup
-            if 'signup_success' in st.session_state and st.session_state.signup_success:
-                st.markdown('<div class="success-message">✅ Account created successfully! Please login with your credentials.</div>', unsafe_allow_html=True)
-                # Clear the flag after showing
-                st.session_state.signup_success = False
-            
-            # Display error message if any
-            if 'login_error' in st.session_state:
-                st.markdown(f'<div class="error-message">{st.session_state.login_error}</div>', unsafe_allow_html=True)
-                del st.session_state.login_error
-            
-            # Login form
-            with st.form("login_form"):
-                st.subheader("Login to Your Account")
-                
-                email = st.text_input("Email", placeholder="Enter your email")
-                password = st.text_input("Password", type="password", placeholder="Enter your password")
-                
-                # Form submission button
-                col1_btn, col2_btn = st.columns([1, 1])
-                with col2_btn:
-                    submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
-                
-                if submitted:
-                    if not email or not password:
-                        st.error("Please fill in all fields")
-                    else:
-                        with st.spinner("Logging in..."):
-                            result = login_user(email, password)
-                            if result["success"]:
-                                # Store user data in session
-                                st.session_state.logged_in = True
-                                st.session_state.user_data = result["data"]["user"]
-                                st.session_state.current_page = "home"
-                                st.rerun()
-                            else:
-                                st.session_state.login_error = result["error"]
-                                st.rerun()
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Signup button
-            st.markdown("---")
-            st.markdown('<div style="text-align: center; margin-bottom: 10px;">Don\'t have an account?</div>', unsafe_allow_html=True)
-            col1_signup, col2_signup, col3_signup = st.columns([1, 2, 1])
-            with col2_signup:
-                if st.button("Sign Up", key="goto_signup", use_container_width=True):
-                    st.session_state.current_page = "signup"
-                    st.rerun()
-
-def signup_page():
-    """Render signup page"""
-    # Center the title for signup page
-    col1_title, col2_title, col3_title = st.columns([1, 2, 1])
-    with col2_title:
-        st.markdown('<div class="welcome-title">Join PulseBoard.ai</div>', unsafe_allow_html=True)
-        st.markdown('<div class="welcome-subtitle">Create your account to get started</div>', unsafe_allow_html=True)
-    
-    # Create a container for the signup form
-    with st.container():
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown('<div class="signup-container">', unsafe_allow_html=True)
-            
-            # Display error message if any
-            if 'signup_error' in st.session_state:
-                st.markdown(f'<div class="error-message">{st.session_state.signup_error}</div>', unsafe_allow_html=True)
-                del st.session_state.signup_error
-            
-            # Signup form
-            with st.form("signup_form"):
-                st.subheader("Create Your Account")
-                
-                # Two-column layout for first and last name
-                col1_name, col2_name = st.columns(2)
-                with col1_name:
-                    first_name = st.text_input("First Name", placeholder="Enter your first name")
-                with col2_name:
-                    last_name = st.text_input("Last Name", placeholder="Enter your last name")
-                
-                email = st.text_input("Email", placeholder="Enter your email")
-                
-                # Password with confirmation
-                col1_pw, col2_pw = st.columns(2)
-                with col1_pw:
-                    password = st.text_input("Password", type="password", placeholder="Create a password")
-                with col2_pw:
-                    confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password")
-                
-                # Form submission button
-                col1_btn, col2_btn = st.columns([1, 1])
-                with col2_btn:
-                    submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
-                
-                if submitted:
-                    # Validation
-                    if not all([first_name, last_name, email, password, confirm_password]):
-                        st.error("Please fill in all fields")
-                    elif password != confirm_password:
-                        st.error("Passwords do not match")
-                    elif len(password) < 6:
-                        st.error("Password must be at least 6 characters long")
-                    else:
-                        with st.spinner("Creating account..."):
-                            result = create_user(email, first_name, last_name, password)
-                            if result["success"]:
-                                # Set success flag and redirect to login
-                                st.session_state.signup_success = True
-                                st.session_state.current_page = "login"
-                                st.rerun()
-                            else:
-                                st.session_state.signup_error = result["error"]
-                                st.rerun()
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Back to Login button (below the form with same width)
-            st.markdown('<div class="back-button-container">', unsafe_allow_html=True)
-            col1_back, col2_back, col3_back = st.columns([1, 2, 1])
-            with col2_back:
-                if st.button("← Back to Login", use_container_width=True):
-                    st.session_state.current_page = "login"
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-def delete_project_from_api(user_id: str, project_id: str):
-    """Delete project via API"""
-    try:
-        response = requests.delete(
-            f"{API_URL}/delete-project",
-            json={
-                "user_id": user_id,
-                "project_id": project_id
-            }
+    @staticmethod
+    def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
+        """Delete project"""
+        return APIClient._make_request(
+            "DELETE", "/delete-project",
+            json={"user_id": user_id, "project_id": project_id}
         )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to delete project")}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
     
-def create_project_page():
-    """Render create project page"""
-    
-    # Get user info from session
-    user_id = st.session_state.user_data.get("user_id")
-    user_name = st.session_state.user_data.get("name", "User")
-    
-    # Track project creation and upload states
-    if 'project_created' not in st.session_state:
-        st.session_state.project_created = False
-    if 'created_project_data' not in st.session_state:
-        st.session_state.created_project_data = None
-    if 'uploading_data' not in st.session_state:
-        st.session_state.uploading_data = False
-    if 'upload_complete' not in st.session_state:
-        st.session_state.upload_complete = False
-    if 'upload_result' not in st.session_state:
-        st.session_state.upload_result = None
-    
-    # Back button in sidebar
-    with st.sidebar:
-        st.markdown(f"### Creating New Project")
-        st.markdown(f"**User:** {user_name}")
-        st.markdown(f"**User ID:** {user_id}")
-        
-        st.markdown("---")
-        
-        if st.button("← Back to Dashboard", use_container_width=True):
-            # Reset all states
-            st.session_state.creating_project = False
-            st.session_state.project_created = False
-            st.session_state.created_project_data = None
-            st.session_state.uploading_data = False
-            st.session_state.upload_complete = False
-            st.session_state.upload_result = None
-            st.rerun()
-    
-    # Main content
-    st.markdown(f"# 📊 Create New Project")
-    st.markdown("---")
-    
-    # Show upload section if project was created
-    if st.session_state.project_created and st.session_state.created_project_data:
-        project_name_created = st.session_state.created_project_data.get("project_name")
-        project_id = st.session_state.created_project_data.get("project_id")
-        
-        st.success(f"✅ Project '{project_name_created}' created successfully!")
-        st.info(f"**Project ID:** {project_id}")
-        
-        # Show upload form
-        st.markdown("---")
-        st.markdown("### 📁 Upload Your Data")
-        st.markdown("Upload your dataset to start analyzing. Supported formats: CSV, Excel (XLS/XLSX), JSON")
-        
-        if not st.session_state.upload_complete:
-            # Upload form
-            with st.form("upload_data_form"):
-                uploaded_file = st.file_uploader(
-                    "Choose a file",
-                    type=["csv", "xlsx", "xls", "json"],
-                    help="Upload CSV, Excel, or JSON files"
-                )
-                
-                # File type selection
-                if uploaded_file:
-                    filename = uploaded_file.name.lower()
-                    if filename.endswith('.csv'):
-                        default_type = "csv"
-                    elif filename.endswith(('.xlsx', '.xls')):
-                        default_type = "excel"
-                    elif filename.endswith('.json'):
-                        default_type = "json"
-                    else:
-                        default_type = "auto"
-                    
-                    file_type = st.selectbox(
-                        "File Type",
-                        options=["auto", "csv", "excel", "json"],
-                        index=0 if default_type == "auto" else ["auto", "csv", "excel", "json"].index(default_type),
-                        help="Auto-detect or manually select file type"
-                    )
-                
-                col1, col2, col3 = st.columns([1, 2, 1])
-                with col2:
-                    upload_submitted = st.form_submit_button(
-                        "📤 Upload Data",
-                        type="primary",
-                        use_container_width=True,
-                        disabled=not uploaded_file
-                    )
-                
-                if upload_submitted and uploaded_file:
-                    st.session_state.uploading_data = True
-                    
-                    with st.spinner("Uploading and processing data..."):
-                        try:
-                            # Prepare form data
-                            files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
-                            data = {
-                                "user_id": user_id,
-                                "file_type": file_type
-                            }
-                            
-                            # Call upload API
-                            response = requests.post(
-                                f"{API_URL}/upload-data/{project_id}",
-                                files=files,
-                                data=data
-                            )
-                            
-                            if response.status_code == 200:
-                                upload_data = response.json()
-                                if upload_data.get("status") == "success":
-                                    st.session_state.upload_complete = True
-                                    st.session_state.upload_result = upload_data
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Upload failed: {upload_data.get('message')}")
-                            else:
-                                st.error(f"❌ Upload failed with status: {response.status_code}")
-                                
-                        except requests.exceptions.ConnectionError:
-                            st.error("❌ Cannot connect to server.")
-                        except Exception as e:
-                            st.error(f"❌ Error uploading file: {str(e)}")
-        
-        # Show upload success
-        if st.session_state.upload_complete and st.session_state.upload_result:
-            records_inserted = st.session_state.upload_result.get("records_inserted", 0)
-            columns = st.session_state.upload_result.get("columns", [])
-            
-            st.success(f"✅ Data uploaded successfully! ({records_inserted} records)")
-            
-            # Show data preview
-            with st.expander("📊 Data Preview", expanded=True):
-                if columns:
-                    st.write(f"**Columns:** {', '.join(columns)}")
-                
-                sample_data = st.session_state.upload_result.get("sample_data", [])
-                if sample_data:
-                    st.write("**Sample data:**")
-                    st.json(sample_data[:3])  # Show first 3 records
-            
-            # Next steps
-            st.markdown("---")
-            st.markdown("### 🚀 Ready to Analyze!")
-            st.markdown("""
-            Your data has been uploaded and is ready for analysis. You can now:
-            
-            1. **Run Data Processing** - Automatically analyze data types and structure
-            2. **Generate Insights** - Get AI-powered insights from your data
-            3. **Create Charts** - Visualize your data with smart chart suggestions
-            """)
-            
-            # Action buttons
-            col1_action, col2_action, col3_action = st.columns(3)
-            with col1_action:
-                if st.button("🏠 Go to Dashboard", use_container_width=True):
-                    # Reset all states
-                    st.session_state.creating_project = False
-                    st.session_state.project_created = False
-                    st.session_state.created_project_data = None
-                    st.session_state.uploading_data = False
-                    st.session_state.upload_complete = False
-                    st.session_state.upload_result = None
-                    st.session_state.projects_data = None
-                    st.session_state.all_projects = None
-                    st.rerun()
-            
-            with col2_action:
-                if st.button("🔍 Run Data Processing", type="primary", use_container_width=True):
-                    st.info("Data processing pipeline coming soon!")
-                    # Here you would call the data processing pipeline
-            
-            with col3_action:
-                if st.button("➕ Upload More Data", use_container_width=True):
-                    st.session_state.uploading_data = False
-                    st.session_state.upload_complete = False
-                    st.session_state.upload_result = None
-                    st.rerun()
-        
-        return  # Don't show the project creation form
-    
-    # Create project form (only shown if no project was just created)
-    with st.form("create_project_form"):
-        st.subheader("Project Details")
-        
-        # Project name
-        project_name = st.text_input(
-            "Project Name *",
-            placeholder="Enter a descriptive name for your project",
-            help="e.g., Sales Analysis 2024, Customer Behavior Dashboard"
-        )
-        
-        # Domain selection
-        domain_options = [
-            "finance", "healthcare", "ecommerce", "education", 
-            "entertainment", "technology", "marketing", "manufacturing",
-            "logistics", "retail", "telecom", "energy", "other"
-        ]
-        
-        domain = st.selectbox(
-            "Domain *",
-            options=domain_options,
-            help="Select the primary domain for your data analysis"
-        )
-        
-        # Form submission
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            submitted = st.form_submit_button(
-                "Create Project",
-                type="primary",
-                use_container_width=True
-            )
-        
-        if submitted:
-            # Validation
-            if not project_name or not project_name.strip():
-                st.error("Please enter a project name")
-            elif not domain:
-                st.error("Please select a domain")
-            else:
-                with st.spinner("Creating project..."):
-                    try:
-                        # Call create project API
-                        response = requests.post(
-                            f"{API_URL}/create-project",
-                            json={
-                                "user_id": user_id,
-                                "project_name": project_name.strip(),
-                                "domain": domain
-                            }
-                        )
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            if data.get("status") == "success":
-                                project_id = data.get("project", {}).get("project_id")
-                                project_name_created = data.get("project", {}).get("name_of_project")
-                                
-                                # Store success data in session
-                                st.session_state.project_created = True
-                                st.session_state.created_project_data = {
-                                    "project_id": project_id,
-                                    "project_name": project_name_created
-                                }
-                                st.rerun()
-                                
-                            else:
-                                error_msg = data.get("message", "Failed to create project")
-                                st.error(f"❌ {error_msg}")
-                        elif response.status_code == 404:
-                            st.error("❌ User not found. Please log in again.")
-                        elif response.status_code == 409:
-                            st.error("❌ A project with this name already exists.")
-                        else:
-                            st.error(f"❌ Failed to create project (Status: {response.status_code})")
-                            
-                    except requests.exceptions.ConnectionError:
-                        st.error("❌ Cannot connect to server. Please make sure the API server is running.")
-                    except Exception as e:
-                        st.error(f"❌ Error creating project: {str(e)}")
-
-def create_project_via_api(user_id: str, project_name: str, domain: str):
-    """Create new project via API"""
-    try:
-        response = requests.post(
-            f"{API_URL}/create-project",
+    @staticmethod
+    def create_project(user_id: str, project_name: str, domain: str) -> Dict[str, Any]:
+        """Create new project"""
+        return APIClient._make_request(
+            "POST", "/create-project",
             json={
                 "user_id": user_id,
                 "project_name": project_name,
                 "domain": domain
             }
         )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            elif data.get("status") == "user_not_found":
-                return {"success": False, "error": "User not found"}
-            else:
-                return {"success": False, "error": data.get("message", "Failed to create project")}
-        elif response.status_code == 404:
-            return {"success": False, "error": "User not found"}
-        else:
-            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
     
-def upload_data_to_project(project_id: str, user_id: str, file, file_type: str = "auto"):
-    """Upload data file to project via API"""
-    try:
-        # Prepare form data
+    @staticmethod
+    def upload_data(project_id: str, user_id: str, file, file_type: str) -> Dict[str, Any]:
+        """Upload data file to project"""
         files = {"file": (file.name, file.getvalue())}
-        data = {
-            "user_id": user_id,
-            "file_type": file_type
-        }
+        data = {"user_id": user_id, "file_type": file_type}
         
-        response = requests.post(
-            f"{API_URL}/upload-data/{project_id}",
+        return APIClient._make_request(
+            "POST", f"/upload-data/{project_id}",
             files=files,
             data=data
         )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "success":
-                return {"success": True, "data": data}
-            else:
-                return {"success": False, "error": data.get("message", "Upload failed")}
-        else:
-            return {"success": False, "error": f"Upload failed with status: {response.status_code}"}
-            
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Cannot connect to server."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
-def home_page():
-    """Render home page"""
-    # Get user_id from session
-    user_id = st.session_state.user_data.get("user_id")
-    user_name = st.session_state.user_data.get("name", "User")
+# ============================================
+# UI Components
+# ============================================
+class UIComponents:
+    """Reusable UI components"""
     
-    # Fetch user details from API
-    if 'user_details' not in st.session_state:
-        with st.spinner("Loading user details..."):
-            user_result = get_user_details_from_api(user_id)
-            if user_result["success"]:
-                st.session_state.user_details = user_result["data"]
-            else:
-                st.error(f"Failed to load user details: {user_result['error']}")
+    @staticmethod
+    def load_css():
+        """Load custom CSS styles"""
+        st.markdown("""
+            <style>
+            .main { padding: 0rem 1rem; }
+            .stButton > button { margin-top: 10px; }
+            
+            /* Containers */
+            .auth-container {
+                max-width: 400px;
+                margin: 0 auto;
+                padding: 30px;
+                border-radius: 15px;
+                background: var(--background-color);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                border: 1px solid var(--secondary-background-color);
+            }
+            
+            /* Typography */
+            .welcome-title {
+                text-align: center;
+                font-size: 2.5rem;
+                font-weight: 800;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 0.5rem;
+            }
+            
+            .welcome-subtitle {
+                text-align: center;
+                font-size: 1.1rem;
+                color: var(--text-color);
+                opacity: 0.8;
+                margin-bottom: 2rem;
+            }
+            
+            /* Cards */
+            .project-card {
+                padding: 20px;
+                border-radius: 12px;
+                margin-bottom: 15px;
+                background: linear-gradient(145deg, var(--background-color), var(--secondary-background-color));
+                border: 1px solid var(--secondary-background-color);
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            
+            .project-card:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+                border-color: var(--primary-color);
+            }
+            
+            /* Messages */
+            .success-message {
+                padding: 12px 16px;
+                background: linear-gradient(135deg, #d4edda, #c3e6cb);
+                color: #155724;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                border-left: 4px solid #28a745;
+            }
+            
+            .error-message {
+                padding: 12px 16px;
+                background: linear-gradient(135deg, #f8d7da, #f5c6cb);
+                color: #721c24;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                border-left: 4px solid #dc3545;
+            }
+            
+            /* Buttons */
+            .form-button {
+                width: 100% !important;
+                font-weight: 600 !important;
+                border-radius: 8px !important;
+                padding: 10px 24px !important;
+                transition: all 0.3s ease !important;
+            }
+            
+            /* Sections */
+            .section-title {
+                font-size: 1.5rem;
+                font-weight: 700;
+                margin: 30px 0 20px 0;
+                padding-bottom: 10px;
+                border-bottom: 2px solid var(--primary-color);
+                position: relative;
+            }
+            
+            .section-title::after {
+                content: '';
+                position: absolute;
+                bottom: -2px;
+                left: 0;
+                width: 60px;
+                height: 2px;
+                background: linear-gradient(90deg, var(--primary-color), transparent);
+            }
+            
+            /* Empty states */
+            .empty-state {
+                text-align: center;
+                padding: 60px 20px;
+                color: var(--text-color);
+                opacity: 0.6;
+            }
+            
+            /* Status badges */
+            .status-badge {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 0.8rem;
+                font-weight: 500;
+                margin-right: 8px;
+                margin-bottom: 8px;
+            }
+            
+            .status-badge-finance { background: #e3f2fd; color: #1976d2; }
+            .status-badge-healthcare { background: #f3e5f5; color: #7b1fa2; }
+            .status-badge-ecommerce { background: #e8f5e9; color: #388e3c; }
+            .status-badge-other { background: #f5f5f5; color: #616161; }
+            
+            /* Animations */
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            
+            .fade-in {
+                animation: fadeIn 0.5s ease-out;
+            }
+            </style>
+        """, unsafe_allow_html=True)
     
-    # Fetch recent projects
-    if st.session_state.projects_data is None:
-        with st.spinner("Loading recent projects..."):
-            recent_result = get_recent_projects_from_api(user_id)
-            if recent_result["success"]:
-                st.session_state.projects_data = recent_result["data"]
-            else:
-                st.error(f"Failed to load recent projects: {recent_result['error']}")
+    @staticmethod
+    def format_timestamp(timestamp_str: str) -> str:
+        """Format ISO timestamp to readable format"""
+        try:
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            return dt.strftime("%b %d, %Y • %I:%M %p")
+        except:
+            return timestamp_str
     
-    # Fetch all projects
-    if st.session_state.all_projects is None:
-        with st.spinner("Loading all projects..."):
-            all_result = get_all_projects_from_api(user_id)
-            if all_result["success"]:
-                st.session_state.all_projects = all_result["data"]
-            else:
-                st.error(f"Failed to load projects: {all_result['error']}")
+    @staticmethod
+    def get_domain_badge_class(domain: str) -> str:
+        """Get CSS class for domain badge"""
+        domain_map = {
+            'finance': 'status-badge-finance',
+            'healthcare': 'status-badge-healthcare',
+            'ecommerce': 'status-badge-ecommerce',
+            'education': 'status-badge-education',
+            'technology': 'status-badge-technology',
+            'marketing': 'status-badge-marketing',
+        }
+        return domain_map.get(domain, 'status-badge-other')
     
-    # Sidebar - Simplified (removed quick actions)
-    with st.sidebar:
-        st.markdown(f"### 👋 Welcome, {user_name.split()[0] if user_name else 'User'}!")
+    @staticmethod
+    def project_card(project: Dict[str, Any], user_id: str, key_suffix: str = ""):
+        """Render a project card"""
+        project_id = project.get('project_id')
+        project_name = project.get('name_of_project', 'Unnamed Project')
+        domain = project.get('domain', 'general')
         
-        # User info
-        if 'user_details' in st.session_state:
+        with st.container():
+            col1, col2, col3 = st.columns([3, 2, 1])
+            
+            with col1:
+                st.markdown(f"**{project_name}**", help=f"Project ID: {project_id}")
+                domain_badge = UIComponents.get_domain_badge_class(domain)
+                st.markdown(f'<span class="status-badge {domain_badge}">{domain.title()}</span>', 
+                          unsafe_allow_html=True)
+            
+            with col2:
+                created_at = UIComponents.format_timestamp(project.get('created_at', ''))
+                last_used = UIComponents.format_timestamp(project.get('last_used_at', ''))
+                st.caption(f"📅 Created: {created_at}")
+                st.caption(f"⏰ Last Used: {last_used}")
+            
+            with col3:
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("📂", key=f"open_{key_suffix}_{project_id}", 
+                               help="Open Project", use_container_width=True):
+                        return ("open", project_id)
+                with btn_col2:
+                    if st.button("🗑️", key=f"delete_{key_suffix}_{project_id}",
+                               help="Delete Project", use_container_width=True):
+                        return ("delete", project_id)
+            
+            st.divider()
+        return (None, None)
+
+# ============================================
+# Page Components
+# ============================================
+class LoginPage:
+    """Login page component"""
+    
+    @staticmethod
+    def render():
+        """Render login page"""
+        st.markdown('<div class="welcome-title">Welcome to PulseBoard.ai</div>', unsafe_allow_html=True)
+        st.markdown('<div class="welcome-subtitle">Intelligent insights for your business</div>', unsafe_allow_html=True)
+        
+        with st.container():
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.markdown('<div class="auth-container fade-in">', unsafe_allow_html=True)
+                
+                # Success message from signup
+                if st.session_state.get('signup_success'):
+                    st.markdown('<div class="success-message">✅ Account created successfully! Please login.</div>', 
+                              unsafe_allow_html=True)
+                    st.session_state.signup_success = False
+                
+                with st.form("login_form"):
+                    st.subheader("Login to Your Account")
+                    
+                    email = st.text_input("Email", placeholder="Enter your email", key="login_email")
+                    password = st.text_input("Password", type="password", placeholder="Enter your password", 
+                                           key="login_password")
+                    
+                    submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
+                    
+                    if submitted:
+                        if not email or not password:
+                            st.error("Please fill in all fields")
+                        else:
+                            with st.spinner("Authenticating..."):
+                                try:
+                                    result = APIClient.login(email, password)
+                                    if result.get("status") == "success":
+                                        SessionStateManager.clear_user_session()
+                                        st.session_state.logged_in = True
+                                        st.session_state.user_data = result["user"]
+                                        st.session_state.current_page = "home"
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {result.get('message', 'Login failed')}")
+                                except Exception as e:
+                                    st.error(f"❌ {str(e)}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Signup link
+                st.markdown("---")
+                st.markdown('<div style="text-align: center; margin-bottom: 10px;">New here?</div>', 
+                          unsafe_allow_html=True)
+                if st.button("Create Account", key="goto_signup", use_container_width=True):
+                    st.session_state.current_page = "signup"
+                    st.rerun()
+
+class SignupPage:
+    """Signup page component"""
+    
+    @staticmethod
+    def render():
+        """Render signup page"""
+        col1_title, col2_title, col3_title = st.columns([1, 2, 1])
+        with col2_title:
+            st.markdown('<div class="welcome-title">Join PulseBoard.ai</div>', unsafe_allow_html=True)
+            st.markdown('<div class="welcome-subtitle">Create your account to get started</div>', 
+                      unsafe_allow_html=True)
+        
+        with st.container():
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.markdown('<div class="auth-container fade-in">', unsafe_allow_html=True)
+                
+                with st.form("signup_form"):
+                    st.subheader("Create Your Account")
+                    
+                    col1_name, col2_name = st.columns(2)
+                    with col1_name:
+                        first_name = st.text_input("First Name", placeholder="Enter your first name")
+                    with col2_name:
+                        last_name = st.text_input("Last Name", placeholder="Enter your last name")
+                    
+                    email = st.text_input("Email", placeholder="Enter your email")
+                    
+                    col1_pw, col2_pw = st.columns(2)
+                    with col1_pw:
+                        password = st.text_input("Password", type="password", 
+                                               placeholder="Create a password")
+                    with col2_pw:
+                        confirm_password = st.text_input("Confirm Password", type="password",
+                                                       placeholder="Confirm your password")
+                    
+                    submitted = st.form_submit_button("Create Account", type="primary", 
+                                                    use_container_width=True)
+                    
+                    if submitted:
+                        if not all([first_name, last_name, email, password, confirm_password]):
+                            st.error("Please fill in all fields")
+                        elif password != confirm_password:
+                            st.error("Passwords do not match")
+                        elif len(password) < 6:
+                            st.error("Password must be at least 6 characters long")
+                        else:
+                            with st.spinner("Creating account..."):
+                                try:
+                                    result = APIClient.create_user(email, first_name, last_name, password)
+                                    if result.get("status") == "success":
+                                        st.session_state.signup_success = True
+                                        st.session_state.current_page = "login"
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {result.get('message', 'Signup failed')}")
+                                except Exception as e:
+                                    st.error(f"❌ {str(e)}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Back to login
+                st.markdown('<div class="back-button-container">', unsafe_allow_html=True)
+                if st.button("← Back to Login", use_container_width=True):
+                    st.session_state.current_page = "login"
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+
+class HomePage:
+    """Home page component"""
+    
+    @staticmethod
+    def _load_data(user_id: str):
+        """Load user data with caching"""
+        if (st.session_state.get('last_refresh') is None or 
+            (datetime.now() - st.session_state.last_refresh).seconds > 60):
+            
+            with st.spinner("Loading data..."):
+                try:
+                    # Parallel data loading
+                    user_details = APIClient.get_user_details(user_id)
+                    recent_projects = APIClient.get_recent_projects(user_id)
+                    all_projects = APIClient.get_all_projects(user_id)
+                    
+                    if user_details.get("status") == "success":
+                        st.session_state.user_details = user_details.get("user", {})
+                    
+                    if recent_projects.get("status") == "success":
+                        st.session_state.projects_data = recent_projects.get("projects", [])
+                    
+                    if all_projects.get("status") == "success":
+                        st.session_state.all_projects = all_projects.get("projects", [])
+                    
+                    st.session_state.last_refresh = datetime.now()
+                    
+                except Exception as e:
+                    st.error(f"Failed to load data: {str(e)}")
+    
+    @staticmethod
+    def _render_sidebar(user_name: str):
+        """Render sidebar"""
+        with st.sidebar:
+            st.markdown(f"### 👋 Welcome, {user_name.split()[0] if user_name else 'User'}!")
+            
+            if 'user_details' in st.session_state:
+                st.markdown("---")
+                st.markdown("#### 📋 Account Info")
+                st.write(f"**Email:** {st.session_state.user_details.get('email', 'N/A')}")
+                st.write(f"**User ID:** {st.session_state.user_data.get('user_id')}")
+            
             st.markdown("---")
-            st.markdown("#### 📋 Account Info")
-            st.write(f"**Email:** {st.session_state.user_details.get('email', 'N/A')}")
-            st.write(f"**User ID:** {user_id}")
+            
+            if st.button("🚪 Logout", type="secondary", use_container_width=True):
+                SessionStateManager.clear_user_session()
+                st.session_state.current_page = "login"
+                st.rerun()
+    
+    @staticmethod
+    def _render_project_list(projects: list, title: str, user_id: str, key_suffix: str):
+        """Render a list of projects"""
+        if not projects:
+            st.markdown(f"""
+                <div class="empty-state">
+                    <h3>No projects found</h3>
+                    <p>Create your first project to get started!</p>
+                </div>
+            """, unsafe_allow_html=True)
+            return
+        
+        st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
+        
+        for project in projects:
+            action, project_id = UIComponents.project_card(project, user_id, key_suffix)
+            
+            if action == "open":
+                with st.spinner("Opening project..."):
+                    try:
+                        APIClient.update_project_last_used(project_id)
+                        st.success(f"Opening {project.get('name_of_project')}...")
+                        st.session_state.projects_data = None
+                        st.session_state.all_projects = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to open: {str(e)}")
+            
+            elif action == "delete":
+                # Confirmation dialog
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    with st.container():
+                        st.warning(f"Are you sure you want to delete '{project.get('name_of_project')}'?")
+                        confirm_col1, confirm_col2 = st.columns(2)
+                        with confirm_col1:
+                            if st.button("✅ Yes", key=f"confirm_del_{project_id}"):
+                                with st.spinner("Deleting..."):
+                                    try:
+                                        APIClient.delete_project(user_id, project_id)
+                                        st.success("Project deleted successfully!")
+                                        st.session_state.projects_data = None
+                                        st.session_state.all_projects = None
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to delete: {str(e)}")
+                        with confirm_col2:
+                            if st.button("❌ No", key=f"cancel_del_{project_id}"):
+                                st.rerun()
+    
+    @staticmethod
+    def render():
+        """Render home page"""
+        user_id = st.session_state.user_data.get("user_id")
+        user_name = st.session_state.user_data.get("name", "User")
+        
+        # Load data
+        HomePage._load_data(user_id)
+        
+        # Render sidebar
+        HomePage._render_sidebar(user_name)
+        
+        # Main content
+        col1, col2, col3 = st.columns([3, 1, 1])
+        with col1:
+            st.markdown(f"# 👋 Welcome, {user_name}!")
+            st.markdown(f"#### Your intelligent analytics dashboard")
+        
+        with col2:
+            if st.session_state.all_projects:
+                st.metric("Total Projects", len(st.session_state.all_projects))
+        
+        with col3:
+            if st.button("📊 New Project", type="primary", use_container_width=True):
+                st.session_state.creating_project = True
+                st.rerun()
         
         st.markdown("---")
         
-        # Only logout button remains
-        if st.button("🚪 Logout", type="secondary", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.user_data = None
-            st.session_state.user_details = None
-            st.session_state.projects_data = None
-            st.session_state.all_projects = None
-            st.session_state.current_page = "login"
-            st.rerun()
-    
-    # Main content area
-    # Welcome header with New Project button
-    col1, col2, col3 = st.columns([3, 1, 1])
-    with col1:
-        st.markdown(f"# 👋 Welcome, {user_name}!")
-        st.markdown(f"#### Your intelligent analytics dashboard")
-    
-    with col2:
-        if st.session_state.all_projects:
-            total_projects = len(st.session_state.all_projects)
-            st.metric("Total Projects", total_projects)
-    
-    with col3:
-        if st.button("📊 New Project", type="primary", use_container_width=True):
-            st.session_state.creating_project = True
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # ... rest of the home_page function remains the same ...
-    
-    # Recent Activity Section - Changed to list view
-    st.markdown('<div class="section-title">📈 Recent Activity</div>', unsafe_allow_html=True)
-    
-    if st.session_state.projects_data:
-        if len(st.session_state.projects_data) > 0:
-            # Show up to 3 most recent projects in list view
-            recent_to_show = st.session_state.projects_data[:3]
-            
-            for project in recent_to_show:
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**{project.get('name_of_project', 'Unnamed Project')}**")
-                        st.caption(f"Domain: {project.get('domain', 'general').title()} • ID: {project.get('project_id')}")
-                    
-                    with col2:
-                        st.caption(f"📅 Created: {format_timestamp(project.get('created_at', ''))}")
-                        st.caption(f"⏰ Last Used: {format_timestamp(project.get('last_used_at', ''))}")
-                    
-                    with col3:
-                        project_id = project.get('project_id')
-                        col_open, col_delete = st.columns(2)
-                        with col_open:
-                            if st.button("📂", key=f"open_recent_{project_id}", help="Open Project", use_container_width=True):
-                                with st.spinner("Opening project..."):
-                                    # Update last used timestamp
-                                    update_result = update_project_last_used(project_id)
-                                    if update_result["success"]:
-                                        st.success(f"Opening {project.get('name_of_project')}...")
-                                        # Here you would navigate to the project page
-                                        # For now, just refresh the project data
-                                        st.session_state.projects_data = None
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Failed to open project: {update_result['error']}")
-                        
-                        with col_delete:
-                            if st.button("🗑️", key=f"delete_recent_{project_id}", help="Delete Project", use_container_width=True):
-                                # Show confirmation dialog
-                                if st.session_state.get(f"confirm_delete_{project_id}", False):
-                                    with st.spinner("Deleting project..."):
-                                        delete_result = delete_project_from_api(user_id, project_id)
-                                        if delete_result["success"]:
-                                            st.success(f"Project '{project.get('name_of_project')}' deleted successfully!")
-                                            # Refresh data
-                                            st.session_state.projects_data = None
-                                            st.session_state.all_projects = None
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Failed to delete: {delete_result['error']}")
-                                else:
-                                    st.session_state[f"confirm_delete_{project_id}"] = True
-                                    st.warning(f"Click again to confirm deletion of '{project.get('name_of_project')}'")
-                                    st.rerun()
-                    
-                    st.divider()
-        else:
-            st.markdown("""
-                <div class="empty-state">
-                    <h3>No projects yet</h3>
-                    <p>Create your first project to get started with analytics!</p>
-                </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("No recent projects...")
-    
-    st.markdown("---")
-    
-    # All Projects Section
-    st.markdown('<div class="section-title">📂 All Projects</div>', unsafe_allow_html=True)
-    
-    if st.session_state.all_projects:
-        if len(st.session_state.all_projects) > 0:
-            # Create a table for all projects
-            for project in st.session_state.all_projects:
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**{project.get('name_of_project', 'Unnamed Project')}**")
-                        st.caption(f"Domain: {project.get('domain', 'general').title()} • ID: {project.get('project_id')}")
-                    
-                    with col2:
-                        st.caption(f"📅 Created: {format_timestamp(project.get('created_at', ''))}")
-                        st.caption(f"⏰ Last Used: {format_timestamp(project.get('last_used_at', ''))}")
-                    
-                    with col3:
-                        project_id = project.get('project_id')
-                        col_open, col_delete = st.columns(2)
-                        with col_open:
-                            if st.button("📂", key=f"open_all_{project_id}", help="Open Project", use_container_width=True):
-                                with st.spinner("Opening..."):
-                                    update_result = update_project_last_used(project_id)
-                                    if update_result["success"]:
-                                        st.success(f"Opening project...")
-                                        st.session_state.projects_data = None
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Failed to open: {update_result['error']}")
-                        
-                        with col_delete:
-                            if st.button("🗑️", key=f"delete_all_{project_id}", help="Delete Project", use_container_width=True):
-                                # Show confirmation dialog
-                                if st.session_state.get(f"confirm_delete_all_{project_id}", False):
-                                    with st.spinner("Deleting project..."):
-                                        delete_result = delete_project_from_api(user_id, project_id)
-                                        if delete_result["success"]:
-                                            st.success(f"Project '{project.get('name_of_project')}' deleted successfully!")
-                                            # Refresh data
-                                            st.session_state.projects_data = None
-                                            st.session_state.all_projects = None
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Failed to delete: {delete_result['error']}")
-                                else:
-                                    st.session_state[f"confirm_delete_all_{project_id}"] = True
-                                    st.warning(f"Click again to confirm deletion of '{project.get('name_of_project')}'")
-                                    st.rerun()
-                    
-                    st.divider()
-        else:
-            st.markdown("""
-                <div class="empty-state">
-                    <h3>No projects found</h3>
-                    <p>Start by creating your first analytics project!</p>
-                </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("No projects aviable...")
-    
-    # Empty space at bottom
-    st.markdown("<br><br>", unsafe_allow_html=True)
+        # Recent Projects
+        HomePage._render_project_list(
+            st.session_state.projects_data[:3] if st.session_state.projects_data else [],
+            "📈 Recent Activity",
+            user_id,
+            "recent"
+        )
+        
+        st.markdown("---")
+        
+        # All Projects
+        HomePage._render_project_list(
+            st.session_state.all_projects if st.session_state.all_projects else [],
+            "📂 All Projects",
+            user_id,
+            "all"
+        )
 
+class CreateProjectPage:
+    """Create project page component"""
+    
+    @staticmethod
+    def _reset_upload_state():
+        """Reset upload-related states"""
+        upload_states = ['project_created', 'created_project_data', 
+                        'uploading_data', 'upload_complete', 'upload_result']
+        for state in upload_states:
+            if state in st.session_state:
+                del st.session_state[state]
+    
+    @staticmethod
+    def _render_upload_section(user_id: str):
+        """Render data upload section"""
+        project_name = st.session_state.created_project_data.get("project_name")
+        project_id = st.session_state.created_project_data.get("project_id")
+        
+        st.success(f"✅ Project '{project_name}' created successfully!")
+        st.info(f"**Project ID:** {project_id}")
+        
+        st.markdown("---")
+        st.markdown("### 📁 Upload Your Data")
+        st.markdown("Upload your dataset to start analyzing. Supported formats: CSV, Excel (XLS/XLSX), JSON")
+        
+        with st.form("upload_data_form"):
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=["csv", "xlsx", "xls", "json"],
+                help="Upload CSV, Excel, or JSON files"
+            )
+            
+            if uploaded_file:
+                filename = uploaded_file.name.lower()
+                file_type_map = {
+                    '.csv': 'csv',
+                    '.xlsx': 'excel',
+                    '.xls': 'excel',
+                    '.json': 'json'
+                }
+                
+                for ext, ftype in file_type_map.items():
+                    if filename.endswith(ext):
+                        default_type = ftype
+                        break
+                else:
+                    default_type = "auto"
+                
+                file_type = st.selectbox(
+                    "File Type",
+                    options=["auto", "csv", "excel", "json"],
+                    index=0 if default_type == "auto" else ["auto", "csv", "excel", "json"].index(default_type),
+                    help="Auto-detect or manually select file type"
+                )
+            
+            if st.form_submit_button("📤 Upload Data", type="primary", 
+                                   disabled=not uploaded_file, use_container_width=True):
+                with st.spinner("Uploading and processing data..."):
+                    try:
+                        result = APIClient.upload_data(project_id, user_id, uploaded_file, file_type)
+                        if result.get("status") == "success":
+                            st.session_state.upload_complete = True
+                            st.session_state.upload_result = result
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {result.get('message', 'Upload failed')}")
+                    except Exception as e:
+                        st.error(f"❌ {str(e)}")
+    
+    @staticmethod
+    def _render_upload_success():
+        """Render upload success section"""
+        records_inserted = st.session_state.upload_result.get("records_inserted", 0)
+        columns = st.session_state.upload_result.get("columns", [])
+        
+        st.success(f"✅ Data uploaded successfully! ({records_inserted} records)")
+        
+        with st.expander("📊 Data Preview", expanded=True):
+            if columns:
+                st.write(f"**Columns:** {', '.join(columns)}")
+            sample_data = st.session_state.upload_result.get("sample_data", [])
+            if sample_data:
+                st.write("**Sample data:**")
+                st.json(sample_data[:3])
+        
+        st.markdown("---")
+        st.markdown("### 🚀 Ready to Analyze!")
+        st.markdown("""
+        Your data has been uploaded and is ready for analysis. You can now:
+        
+        1. **Run Data Processing** - Automatically analyze data types and structure
+        2. **Generate Insights** - Get AI-powered insights from your data
+        3. **Create Charts** - Visualize your data with smart chart suggestions
+        """)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🏠 Go to Dashboard", use_container_width=True):
+                CreateProjectPage._reset_upload_state()
+                st.session_state.creating_project = False
+                st.session_state.projects_data = None
+                st.session_state.all_projects = None
+                st.rerun()
+        
+        with col2:
+            if st.button("🔍 Run Data Processing", type="primary", use_container_width=True):
+                st.info("Data processing pipeline coming soon!")
+        
+        with col3:
+            if st.button("➕ Upload More Data", use_container_width=True):
+                CreateProjectPage._reset_upload_state()
+                st.rerun()
+    
+    @staticmethod
+    def _render_create_form(user_id: str):
+        """Render project creation form"""
+        with st.form("create_project_form"):
+            st.subheader("Project Details")
+            
+            project_name = st.text_input(
+                "Project Name *",
+                placeholder="Enter a descriptive name for your project",
+                help="e.g., Sales Analysis 2024, Customer Behavior Dashboard"
+            )
+            
+            domain_options = [
+                "finance", "healthcare", "ecommerce", "education", 
+                "entertainment", "technology", "marketing", "manufacturing",
+                "logistics", "retail", "telecom", "energy", "other"
+            ]
+            
+            domain = st.selectbox(
+                "Domain *",
+                options=domain_options,
+                help="Select the primary domain for your data analysis"
+            )
+            
+            if st.form_submit_button("Create Project", type="primary", use_container_width=True):
+                if not project_name or not project_name.strip():
+                    st.error("Please enter a project name")
+                elif not domain:
+                    st.error("Please select a domain")
+                else:
+                    with st.spinner("Creating project..."):
+                        try:
+                            result = APIClient.create_project(user_id, project_name.strip(), domain)
+                            if result.get("status") == "success":
+                                project = result.get("project", {})
+                                st.session_state.project_created = True
+                                st.session_state.created_project_data = {
+                                    "project_id": project.get("project_id"),
+                                    "project_name": project.get("name_of_project")
+                                }
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {result.get('message', 'Project creation failed')}")
+                        except Exception as e:
+                            st.error(f"❌ {str(e)}")
+    
+    @staticmethod
+    def render():
+        """Render create project page"""
+        user_id = st.session_state.user_data.get("user_id")
+        user_name = st.session_state.user_data.get("name", "User")
+        
+        # Sidebar
+        with st.sidebar:
+            st.markdown(f"### Creating New Project")
+            st.markdown(f"**User:** {user_name}")
+            st.markdown(f"**User ID:** {user_id}")
+            st.markdown("---")
+            
+            if st.button("← Back to Dashboard", use_container_width=True):
+                CreateProjectPage._reset_upload_state()
+                st.session_state.creating_project = False
+                st.rerun()
+        
+        # Main content
+        st.markdown(f"# 📊 Create New Project")
+        st.markdown("---")
+        
+        # Show upload section if project was created
+        if st.session_state.get('project_created') and st.session_state.get('created_project_data'):
+            if st.session_state.get('upload_complete'):
+                CreateProjectPage._render_upload_success()
+            else:
+                CreateProjectPage._render_upload_section(user_id)
+        else:
+            CreateProjectPage._render_create_form(user_id)
+
+# ============================================
+# Main Application
+# ============================================
 def main():
     """Main application router"""
+    # Initialize session state
+    SessionStateManager.initialize()
     
-    # Check if user is logged in
+    # Load CSS
+    UIComponents.load_css()
+    
+    # Check authentication timeout
+    if (st.session_state.logged_in and st.session_state.get('last_refresh') and 
+        (datetime.now() - st.session_state.last_refresh).seconds > SESSION_TIMEOUT):
+        SessionStateManager.clear_user_session()
+        st.session_state.current_page = "login"
+        st.warning("Session expired. Please login again.")
+    
+    # Route to appropriate page
     if st.session_state.logged_in:
         if st.session_state.creating_project:
-            create_project_page()
+            CreateProjectPage.render()
         else:
-            home_page()
+            HomePage.render()
     else:
-        # Show login or signup based on current page
         if st.session_state.current_page == "login":
-            login_page()
+            LoginPage.render()
         elif st.session_state.current_page == "signup":
-            signup_page()
+            SignupPage.render()
         else:
             st.session_state.current_page = "login"
             st.rerun()
