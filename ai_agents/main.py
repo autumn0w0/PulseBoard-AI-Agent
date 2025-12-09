@@ -8,7 +8,6 @@ sys.path.append("..")
 #-- registration --
 from pipelines.registration.project_creation import run_project_creation
 from pipelines.registration.user_creation import run_user_creation
-from pipelines.registration.project_creation import run_project_creation
 #-- helper --
 from helpers.logger import get_logger
 #-- processing --
@@ -17,6 +16,14 @@ from ai_agents.api.bashboard_apis import run_pdp
 from ai_agents.agent.middleware_node import run_middleware
 #-- user --
 from ai_agents.api.user_apis import run_user_login
+#-- dashboard --
+from ai_agents.api.bashboard_apis import (
+    get_user_details,
+    get_recent_projects,
+    get_all_projects,
+    update_project_last_used,
+    get_user_projects_count
+)
 
 logger = get_logger(__name__)
 
@@ -75,6 +82,18 @@ class UserCreateRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError('Name cannot be empty')
         return v.strip()
+
+# Add these with your other Pydantic models
+class UserLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+# Dashboard Pydantic models
+class ProjectUpdateRequest(BaseModel):
+    project_id: str
+
+class UserIdRequest(BaseModel):
+    user_id: str
 
 @app.post("/create-user")
 async def create_user(user_data: UserCreateRequest):
@@ -241,11 +260,6 @@ async def query_middleware(request: MiddlewareQueryRequest):
         logger.error(f"Error in middleware query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Add this with your other Pydantic models
-class UserLoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
 # Add this endpoint to your FastAPI app
 @app.post("/user-login")
 async def login_user(login_data: UserLoginRequest):
@@ -282,6 +296,228 @@ async def login_user(login_data: UserLoginRequest):
     except Exception as e:
         logger.error(f"Error in login endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Dashboard API Endpoints
+@app.get("/user-details/{user_id}")
+async def get_user_details_endpoint(user_id: str):
+    """
+    Get user details for the dashboard
+    
+    Example request:
+    GET /user-details/UID002
+    
+    Example response:
+    {
+        "_id": "6937c374491b077a8f3611e2",
+        "user_id": "UID002",
+        "name": "Akhilesh Damke",
+        "email": "akhileshdamke7860@gmail.com"
+    }
+    """
+    try:
+        logger.info(f"Getting user details for user_id: {user_id}")
+        
+        result = get_user_details(user_id)
+        
+        logger.info(f"User details retrieved successfully for user_id: {user_id}")
+        return {
+            "status": "success",
+            "user": result
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_user_details endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user details: {str(e)}")
+
+@app.get("/recent-projects/{user_id}")
+async def get_recent_projects_endpoint(user_id: str, limit: int = 3):
+    """
+    Get recent projects for a user (default: 3 most recent)
+    
+    Example request:
+    GET /recent-projects/UID002
+    GET /recent-projects/UID002?limit=5
+    
+    Example response:
+    {
+        "status": "success",
+        "projects": [
+            {
+                "project_id": "UID002PJ001",
+                "name_of_project": "My Analytics Project",
+                "domain": "entertainment",
+                "created_at": "2025-12-09T06:49:25.612Z",
+                "last_used_at": "2025-12-09T06:49:25.612Z"
+            }
+        ]
+    }
+    """
+    try:
+        logger.info(f"Getting recent projects for user_id: {user_id}, limit: {limit}")
+        
+        # Validate limit parameter
+        if limit < 1 or limit > 50:
+            raise HTTPException(status_code=400, detail="Limit must be between 1 and 50")
+        
+        projects = get_recent_projects(user_id, limit)
+        
+        logger.info(f"Retrieved {len(projects)} recent projects for user_id: {user_id}")
+        return {
+            "status": "success",
+            "total_projects": len(projects),
+            "projects": projects
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_recent_projects endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get recent projects: {str(e)}")
+
+@app.get("/all-projects/{user_id}")
+async def get_all_projects_endpoint(user_id: str):
+    """
+    Get all projects for a user, sorted by most recent
+    
+    Example request:
+    GET /all-projects/UID002
+    
+    Example response:
+    {
+        "status": "success",
+        "total_projects": 1,
+        "projects": [
+            {
+                "project_id": "UID002PJ001",
+                "name_of_project": "My Analytics Project",
+                "domain": "entertainment",
+                "created_at": "2025-12-09T06:49:25.612Z",
+                "last_used_at": "2025-12-09T06:49:25.612Z"
+            }
+        ]
+    }
+    """
+    try:
+        logger.info(f"Getting all projects for user_id: {user_id}")
+        
+        projects = get_all_projects(user_id)
+        
+        logger.info(f"Retrieved {len(projects)} projects for user_id: {user_id}")
+        return {
+            "status": "success",
+            "total_projects": len(projects),
+            "projects": projects
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_all_projects endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get projects: {str(e)}")
+
+@app.put("/update-project-last-used")
+async def update_project_last_used_endpoint(request: ProjectUpdateRequest):
+    """
+    Update the last_used_at timestamp for a project
+    
+    Example request:
+    PUT /update-project-last-used
+    {
+        "project_id": "UID002PJ001"
+    }
+    
+    Example response:
+    {
+        "status": "success",
+        "message": "Project last_used_at updated successfully",
+        "project": {
+            "project_id": "UID002PJ001",
+            "name_of_project": "My Analytics Project",
+            "domain": "entertainment",
+            "created_at": "2025-12-09T06:49:25.612Z",
+            "last_used_at": "2025-12-10T10:30:00.000Z"
+        }
+    }
+    """
+    try:
+        logger.info(f"Updating last_used_at for project: {request.project_id}")
+        
+        # Note: This endpoint assumes the user_id is available from session/token
+        # In a real implementation, you would get user_id from JWT token or session
+        # For now, we'll extract it from the project_id (UID002PJ001 → UID002)
+        # Or you could pass user_id in the request
+        
+        # Extract user_id from project_id (assuming format: UID002PJ001)
+        user_id = request.project_id.split('PJ')[0]
+        
+        if not user_id.startswith('UID'):
+            raise HTTPException(status_code=400, detail="Invalid project_id format")
+        
+        updated_project = update_project_last_used(user_id, request.project_id)
+        
+        logger.info(f"Project last_used_at updated successfully: {request.project_id}")
+        return {
+            "status": "success",
+            "message": "Project last_used_at updated successfully",
+            "project": updated_project
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in update_project_last_used endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update project: {str(e)}")
+
+@app.get("/project-count/{user_id}")
+async def get_project_count_endpoint(user_id: str):
+    """
+    Get the total number of projects for a user
+    
+    Example request:
+    GET /project-count/UID002
+    
+    Example response:
+    {
+        "status": "success",
+        "total_projects": 5
+    }
+    """
+    try:
+        logger.info(f"Getting project count for user_id: {user_id}")
+        
+        result = get_user_projects_count(user_id)
+        
+        logger.info(f"Project count retrieved for user_id: {user_id}")
+        return {
+            "status": "success",
+            "total_projects": result["total_projects"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_project_count endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get project count: {str(e)}")
+
+@app.get("/health-check")
+async def health_check():
+    """
+    Health check endpoint for monitoring
+    
+    Example response:
+    {
+        "status": "healthy",
+        "timestamp": "2025-12-09T06:49:25.612Z"
+    }
+    """
+    from datetime import datetime, timezone
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+        "service": "PulseBoard.ai API"
+    }
 
 if __name__ == "__main__":
     import uvicorn

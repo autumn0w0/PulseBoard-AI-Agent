@@ -3,26 +3,142 @@ import streamlit as st
 import requests
 import os
 from dotenv import load_dotenv
-import time
-        
-import sys
-sys.path.append("..")
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
 
-# Get API URL from environment
+# API Configuration
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
-# Configure page
+# Page configuration
 st.set_page_config(
-    page_title="Pulse Board",
+    page_title="PulseBoard.ai",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-def login_user(email, password):
-    """Login user via API"""
+# Session state initialization
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_data' not in st.session_state:
+    st.session_state.user_data = None
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = "login"
+if 'projects_data' not in st.session_state:
+    st.session_state.projects_data = None
+if 'all_projects' not in st.session_state:
+    st.session_state.all_projects = None
+
+# Custom CSS for better styling (theme-aware)
+st.markdown("""
+    <style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .stButton > button {
+        margin-top: 10px;
+    }
+    .login-container {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .signup-container {
+        max-width: 500px;
+        margin: 0 auto;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .welcome-title {
+        text-align: center;
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: var(--primary-color);
+        margin-bottom: 1rem;
+    }
+    .welcome-subtitle {
+        text-align: center;
+        font-size: 1.2rem;
+        color: var(--text-color);
+        margin-bottom: 2rem;
+    }
+    .success-message {
+        padding: 10px;
+        background-color: #d4edda;
+        color: #155724;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .error-message {
+        padding: 10px;
+        background-color: #f8d7da;
+        color: #721c24;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .form-button {
+        width: 100% !important;
+    }
+    .back-button-container {
+        text-align: center;
+        margin-top: 20px;
+    }
+    .project-card {
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 15px;
+        background-color: var(--background-color);
+        border: 1px solid var(--secondary-background-color);
+        transition: transform 0.2s;
+    }
+    .project-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+    .project-name {
+        font-size: 1.2rem;
+        font-weight: bold;
+        margin-bottom: 5px;
+        color: var(--text-color);
+    }
+    .project-domain {
+        font-size: 0.9rem;
+        color: var(--text-color);
+        background-color: var(--secondary-background-color);
+        padding: 3px 8px;
+        border-radius: 12px;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
+    .project-time {
+        font-size: 0.8rem;
+        color: var(--text-color);
+        opacity: 0.7;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: var(--text-color);
+        opacity: 0.7;
+    }
+    .section-title {
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-bottom: 20px;
+        color: var(--text-color);
+        padding-bottom: 10px;
+        border-bottom: 2px solid var(--primary-color);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+def login_user(email: str, password: str):
+    """Authenticate user via API"""
     try:
         response = requests.post(
             f"{API_URL}/user-login",
@@ -34,17 +150,20 @@ def login_user(email, password):
         
         if response.status_code == 200:
             data = response.json()
-            return True, data.get("message", "Login successful"), data.get("user")
-        elif response.status_code == 401:
-            return False, "Invalid email or password", None
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
+            else:
+                return {"success": False, "error": data.get("message", "Login failed")}
         else:
-            return False, f"Login failed: {response.text}", None
+            return {"success": False, "error": f"Login failed with status code: {response.status_code}"}
             
-    except requests.exceptions.RequestException as e:
-        return False, f"Connection error: {str(e)}", None
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server. Please make sure the API server is running."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
-def register_user(email, first_name, last_name, password):
-    """Register new user via API"""
+def create_user(email: str, first_name: str, last_name: str, password: str):
+    """Create new user via API"""
     try:
         response = requests.post(
             f"{API_URL}/create-user",
@@ -57,342 +176,445 @@ def register_user(email, first_name, last_name, password):
         )
         
         if response.status_code == 200:
-            return True, "Registration successful!"
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
+            else:
+                return {"success": False, "error": data.get("message", "Signup failed")}
         elif response.status_code == 409:
-            return False, "User already exists"
+            return {"success": False, "error": "User already exists with this email."}
         else:
-            return False, f"Registration failed: {response.text}"
+            return {"success": False, "error": f"Signup failed with status code: {response.status_code}"}
             
-    except requests.exceptions.RequestException as e:
-        return False, f"Connection error: {str(e)}"
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server. Please make sure the API server is running."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
-def create_project(user_id, project_name, domain):
-    """Create new project via API"""
+def get_user_details_from_api(user_id: str):
+    """Get user details from API"""
     try:
-        response = requests.post(
-            f"{API_URL}/create-project",
-            json={
-                "user_id": user_id,
-                "project_name": project_name,
-                "domain": domain
-            }
+        response = requests.get(f"{API_URL}/user-details/{user_id}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data.get("user", {})}
+            else:
+                return {"success": False, "error": data.get("message", "Failed to get user details")}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_recent_projects_from_api(user_id: str):
+    """Get recent projects from API"""
+    try:
+        response = requests.get(f"{API_URL}/recent-projects/{user_id}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data.get("projects", [])}
+            else:
+                return {"success": False, "error": data.get("message", "Failed to get projects")}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_all_projects_from_api(user_id: str):
+    """Get all projects from API"""
+    try:
+        response = requests.get(f"{API_URL}/all-projects/{user_id}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {"success": True, "data": data.get("projects", [])}
+            else:
+                return {"success": False, "error": data.get("message", "Failed to get projects")}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def update_project_last_used(project_id: str):
+    """Update project last used timestamp"""
+    try:
+        response = requests.put(
+            f"{API_URL}/update-project-last-used",
+            json={"project_id": project_id}
         )
         
         if response.status_code == 200:
             data = response.json()
-            return True, "Project created successfully!", data
-        elif response.status_code == 404:
-            return False, "User not found", None
-        else:
-            return False, f"Project creation failed: {response.text}", None
-            
-    except requests.exceptions.RequestException as e:
-        return False, f"Connection error: {str(e)}", None
-
-def main():
-    # Custom CSS for better styling
-    st.markdown("""
-        <style>
-        .main {
-            padding: 1rem;
-        }
-        .stButton>button {
-            width: 100%;
-            border-radius: 5px;
-            height: 3em;
-        }
-        .project-card {
-            padding: 1.5rem;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            margin-bottom: 1rem;
-            background-color: #f9f9f9;
-        }
-        .section-header {
-            font-size: 1.5rem;
-            font-weight: bold;
-            margin-top: 2rem;
-            margin-bottom: 1rem;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # Initialize session state
-    if 'page' not in st.session_state:
-        st.session_state.page = 'login'
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-    if 'user_data' not in st.session_state:
-        st.session_state.user_data = None
-    if 'current_view' not in st.session_state:
-        st.session_state.current_view = 'dashboard'
-
-    # If user is logged in, show appropriate view
-    if st.session_state.logged_in:
-        if st.session_state.current_view == 'dashboard':
-            show_dashboard()
-        elif st.session_state.current_view == 'new_project':
-            show_new_project_page()
-        return
-
-    # Show login or signup page based on session state
-    if st.session_state.page == 'login':
-        show_login_page()
-    else:
-        show_signup_page()
-
-def show_dashboard():
-    """Show the main dashboard after login"""
-    user = st.session_state.user_data
-    
-    # Sidebar with logout button
-    with st.sidebar:
-        st.title("Menu")
-        st.write("---")
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.user_data = None
-            st.session_state.page = 'login'
-            st.session_state.current_view = 'dashboard'
-            st.rerun()
-    
-    # Main content
-    if user:
-        st.title(f"Welcome, {user.get('first_name', '')} {user.get('last_name', '')}! 👋")
-    
-    st.write("---")
-    
-    # New Project Button
-    if st.button("➕ Create New Project", use_container_width=True, type="primary"):
-        st.session_state.current_view = 'new_project'
-        st.rerun()
-    
-    st.write("")
-    
-    # Recent Activity Section
-    st.markdown('<div class="section-header">📌 Recent Activity</div>', unsafe_allow_html=True)
-    
-    # Placeholder for recent projects (3 at a time)
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("""
-        <div class="project-card">
-            <h4>Project 1</h4>
-            <p>Domain: Healthcare</p>
-            <p>Last updated: 2 days ago</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        <div class="project-card">
-            <h4>Project 2</h4>
-            <p>Domain: Finance</p>
-            <p>Last updated: 5 days ago</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown("""
-        <div class="project-card">
-            <h4>Project 3</h4>
-            <p>Domain: E-commerce</p>
-            <p>Last updated: 1 week ago</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.write("")
-    
-    # All Projects Section
-    st.markdown('<div class="section-header">📂 All Projects</div>', unsafe_allow_html=True)
-    
-    # Placeholder for all projects
-    for i in range(1, 6):
-        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-        with col1:
-            st.write(f"**Project {i}**")
-        with col2:
-            st.write("Domain: Various")
-        with col3:
-            st.write(f"Created: {i} weeks ago")
-        with col4:
-            if st.button("Open", key=f"open_{i}"):
-                st.info(f"Opening Project {i}...")
-        st.write("---")
-
-def show_new_project_page():
-    """Show the new project creation page"""
-    user = st.session_state.user_data
-    
-    # Sidebar with back button
-    with st.sidebar:
-        st.title("Menu")
-        st.write("---")
-        if st.button("⬅️ Back to Dashboard", use_container_width=True):
-            st.session_state.current_view = 'dashboard'
-            st.rerun()
-        st.write("---")
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.user_data = None
-            st.session_state.page = 'login'
-            st.session_state.current_view = 'dashboard'
-            st.rerun()
-    
-    st.title("Create New Project")
-    st.write("Fill in the details to create a new project")
-    st.write("---")
-    
-    with st.form("new_project_form"):
-        project_name = st.text_input("📝 Project Name", placeholder="Enter project name")
-        
-        domain = st.selectbox(
-            "🏢 Domain",
-            options=[
-                "Healthcare",
-                "Finance",
-                "E-commerce",
-                "Education",
-                "Manufacturing",
-                "Retail",
-                "Technology",
-                "Other"
-            ]
-        )
-        
-        # If "Other" is selected, show text input
-        if domain == "Other":
-            domain = st.text_input("Enter custom domain", placeholder="Enter your domain")
-        
-        st.write("")
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
-            submit_button = st.form_submit_button("Create Project", type="primary")
-        with col2:
-            cancel_button = st.form_submit_button("Cancel")
-        
-        if submit_button:
-            if project_name and domain:
-                with st.spinner("Creating project..."):
-                    user_id = user.get('user_id')
-                    success, message, project_data = create_project(user_id, project_name, domain)
-                
-                if success:
-                    st.success(message)
-                    st.write("---")
-                    st.subheader("Project Created Successfully! 🎉")
-                    
-                    if project_data:
-                        project_info = project_data.get('project', {})
-                        st.write(f"**Project ID:** {project_info.get('project_id', 'N/A')}")
-                        st.write(f"**Project Name:** {project_info.get('project_name', 'N/A')}")
-                        st.write(f"**Domain:** {project_info.get('domain', 'N/A')}")
-                    
-                    st.write("---")
-                    st.info("Next steps: Upload data and start processing")
-                    
-                    # Placeholder buttons for next steps
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("📤 Upload Data", use_container_width=True):
-                            st.info("Upload data feature coming soon...")
-                    with col2:
-                        if st.button("⚙️ Start Data Processing", use_container_width=True):
-                            st.info("Data processing feature coming soon...")
-                else:
-                    st.error(message)
+            if data.get("status") == "success":
+                return {"success": True, "data": data}
             else:
-                st.warning("Please fill in all required fields")
-        
-        if cancel_button:
-            st.session_state.current_view = 'dashboard'
-            st.rerun()
+                return {"success": False, "error": data.get("message", "Failed to update project")}
+        else:
+            return {"success": False, "error": f"Failed with status code: {response.status_code}"}
+            
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to server."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
-def show_login_page():
-    """Show the login page"""
-    st.title("🔐 Pulse Board Login")
+def format_timestamp(timestamp_str: str) -> str:
+    """Format ISO timestamp to readable format"""
+    try:
+        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        return dt.strftime("%b %d, %Y %I:%M %p")
+    except:
+        return timestamp_str
+
+def login_page():
+    """Render login page"""
+    # Welcome title
+    st.markdown('<div class="welcome-title">Welcome to PulseBoard.ai</div>', unsafe_allow_html=True)
+    st.markdown('<div class="welcome-subtitle">Intelligent insights for your business</div>', unsafe_allow_html=True)
     
+    # Create a container for the login form
     with st.container():
-        with st.form("login_form"):
-            email = st.text_input("📧 Email", placeholder="Enter your email")
-            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown('<div class="login-container">', unsafe_allow_html=True)
             
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                login_button = st.form_submit_button("Login")
-            with col2:
-                signup_button = st.form_submit_button("Sign Up")
+            # Display success message if redirected from signup
+            if 'signup_success' in st.session_state and st.session_state.signup_success:
+                st.markdown('<div class="success-message">✅ Account created successfully! Please login with your credentials.</div>', unsafe_allow_html=True)
+                # Clear the flag after showing
+                st.session_state.signup_success = False
             
-            if login_button:
-                if email and password:
-                    with st.spinner("Logging in..."):
-                        success, message, user_data = login_user(email, password)
-                        
-                    if success:
-                        st.session_state.logged_in = True
-                        st.session_state.user_data = user_data
-                        st.session_state.current_view = 'dashboard'
-                        st.success(message)
-                        time.sleep(1)
-                        st.rerun()
+            # Display error message if any
+            if 'login_error' in st.session_state:
+                st.markdown(f'<div class="error-message">{st.session_state.login_error}</div>', unsafe_allow_html=True)
+                del st.session_state.login_error
+            
+            # Login form
+            with st.form("login_form"):
+                st.subheader("Login to Your Account")
+                
+                email = st.text_input("Email", placeholder="Enter your email")
+                password = st.text_input("Password", type="password", placeholder="Enter your password")
+                
+                # Form submission button
+                col1_btn, col2_btn = st.columns([1, 1])
+                with col2_btn:
+                    submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if not email or not password:
+                        st.error("Please fill in all fields")
                     else:
-                        st.error(message)
-                else:
-                    st.warning("Please fill in all fields")
-            
-            if signup_button:
-                st.session_state.page = 'signup'
-                st.rerun()
-
-def show_signup_page():
-    """Show the signup page"""
-    st.title("👤 Create Account")
-    
-    with st.container():
-        with st.form("signup_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                first_name = st.text_input("First Name", placeholder="Enter first name")
-            with col2:
-                last_name = st.text_input("Last Name", placeholder="Enter last name")
-            
-            email = st.text_input("📧 Email", placeholder="Enter your email")
-            password = st.text_input("🔒 Password", type="password", placeholder="Create a password")
-            confirm_password = st.text_input("✅ Confirm Password", type="password", placeholder="Confirm your password")
-            
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                signup_button = st.form_submit_button("Create Account")
-            with col2:
-                back_button = st.form_submit_button("Back to Login")
-            
-            if signup_button:
-                if all([first_name, last_name, email, password, confirm_password]):
-                    if password == confirm_password:
-                        if len(password) >= 8:
-                            with st.spinner("Creating account..."):
-                                success, message = register_user(email, first_name, last_name, password)
-                                
-                            if success:
-                                st.success(message)
-                                st.info("Redirecting to login page...")
-                                time.sleep(2)
-                                st.session_state.page = 'login'
+                        with st.spinner("Logging in..."):
+                            result = login_user(email, password)
+                            if result["success"]:
+                                # Store user data in session
+                                st.session_state.logged_in = True
+                                st.session_state.user_data = result["data"]["user"]
+                                st.session_state.current_page = "home"
                                 st.rerun()
                             else:
-                                st.error(message)
-                        else:
-                            st.warning("Password must be at least 8 characters long")
-                    else:
-                        st.warning("Passwords do not match")
-                else:
-                    st.warning("Please fill in all fields")
+                                st.session_state.login_error = result["error"]
+                                st.rerun()
             
-            if back_button:
-                st.session_state.page = 'login'
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Signup button
+            st.markdown("---")
+            st.markdown('<div style="text-align: center; margin-bottom: 10px;">Don\'t have an account?</div>', unsafe_allow_html=True)
+            col1_signup, col2_signup, col3_signup = st.columns([1, 2, 1])
+            with col2_signup:
+                if st.button("Sign Up", key="goto_signup", use_container_width=True):
+                    st.session_state.current_page = "signup"
+                    st.rerun()
+
+def signup_page():
+    """Render signup page"""
+    # Center the title for signup page
+    col1_title, col2_title, col3_title = st.columns([1, 2, 1])
+    with col2_title:
+        st.markdown('<div class="welcome-title">Join PulseBoard.ai</div>', unsafe_allow_html=True)
+        st.markdown('<div class="welcome-subtitle">Create your account to get started</div>', unsafe_allow_html=True)
+    
+    # Create a container for the signup form
+    with st.container():
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown('<div class="signup-container">', unsafe_allow_html=True)
+            
+            # Display error message if any
+            if 'signup_error' in st.session_state:
+                st.markdown(f'<div class="error-message">{st.session_state.signup_error}</div>', unsafe_allow_html=True)
+                del st.session_state.signup_error
+            
+            # Signup form
+            with st.form("signup_form"):
+                st.subheader("Create Your Account")
+                
+                # Two-column layout for first and last name
+                col1_name, col2_name = st.columns(2)
+                with col1_name:
+                    first_name = st.text_input("First Name", placeholder="Enter your first name")
+                with col2_name:
+                    last_name = st.text_input("Last Name", placeholder="Enter your last name")
+                
+                email = st.text_input("Email", placeholder="Enter your email")
+                
+                # Password with confirmation
+                col1_pw, col2_pw = st.columns(2)
+                with col1_pw:
+                    password = st.text_input("Password", type="password", placeholder="Create a password")
+                with col2_pw:
+                    confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password")
+                
+                # Form submission button
+                col1_btn, col2_btn = st.columns([1, 1])
+                with col2_btn:
+                    submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+                
+                if submitted:
+                    # Validation
+                    if not all([first_name, last_name, email, password, confirm_password]):
+                        st.error("Please fill in all fields")
+                    elif password != confirm_password:
+                        st.error("Passwords do not match")
+                    elif len(password) < 6:
+                        st.error("Password must be at least 6 characters long")
+                    else:
+                        with st.spinner("Creating account..."):
+                            result = create_user(email, first_name, last_name, password)
+                            if result["success"]:
+                                # Set success flag and redirect to login
+                                st.session_state.signup_success = True
+                                st.session_state.current_page = "login"
+                                st.rerun()
+                            else:
+                                st.session_state.signup_error = result["error"]
+                                st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Back to Login button (below the form with same width)
+            st.markdown('<div class="back-button-container">', unsafe_allow_html=True)
+            col1_back, col2_back, col3_back = st.columns([1, 2, 1])
+            with col2_back:
+                if st.button("← Back to Login", use_container_width=True):
+                    st.session_state.current_page = "login"
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+def home_page():
+    """Render home page"""
+    # Get user_id from session
+    user_id = st.session_state.user_data.get("user_id")
+    user_name = st.session_state.user_data.get("name", "User")
+    
+    # Fetch user details from API
+    if 'user_details' not in st.session_state:
+        with st.spinner("Loading user details..."):
+            user_result = get_user_details_from_api(user_id)
+            if user_result["success"]:
+                st.session_state.user_details = user_result["data"]
+            else:
+                st.error(f"Failed to load user details: {user_result['error']}")
+    
+    # Fetch recent projects
+    if st.session_state.projects_data is None:
+        with st.spinner("Loading recent projects..."):
+            recent_result = get_recent_projects_from_api(user_id)
+            if recent_result["success"]:
+                st.session_state.projects_data = recent_result["data"]
+            else:
+                st.error(f"Failed to load recent projects: {recent_result['error']}")
+    
+    # Fetch all projects
+    if st.session_state.all_projects is None:
+        with st.spinner("Loading all projects..."):
+            all_result = get_all_projects_from_api(user_id)
+            if all_result["success"]:
+                st.session_state.all_projects = all_result["data"]
+            else:
+                st.error(f"Failed to load projects: {all_result['error']}")
+    
+    # Sidebar
+    with st.sidebar:
+        st.markdown(f"### 👋 Welcome, {user_name.split()[0] if user_name else 'User'}!")
+        
+        # User info
+        if 'user_details' in st.session_state:
+            st.markdown("---")
+            st.markdown("#### 📋 Account Info")
+            st.write(f"**Email:** {st.session_state.user_details.get('email', 'N/A')}")
+            st.write(f"**User ID:** {user_id}")
+        
+        # Quick actions
+        st.markdown("---")
+        st.markdown("#### 🎯 Quick Actions")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Refresh", use_container_width=True):
+                st.session_state.projects_data = None
+                st.session_state.all_projects = None
                 st.rerun()
+        
+        with col2:
+            if st.button("📊 New Project", use_container_width=True):
+                st.info("Create Project feature coming soon!")
+        
+        st.markdown("---")
+        
+        # Logout button
+        if st.button("🚪 Logout", type="secondary", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.user_data = None
+            st.session_state.user_details = None
+            st.session_state.projects_data = None
+            st.session_state.all_projects = None
+            st.session_state.current_page = "login"
+            st.rerun()
+    
+    # Main content area
+    # Welcome header
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"# 👋 Welcome, {user_name}!")
+        st.markdown(f"#### Your intelligent analytics dashboard")
+    
+    with col2:
+        if st.session_state.all_projects:
+            total_projects = len(st.session_state.all_projects)
+            st.metric("Total Projects", total_projects)
+    
+    st.markdown("---")
+    
+    # Recent Activity Section
+    st.markdown('<div class="section-title">📈 Recent Activity</div>', unsafe_allow_html=True)
+    
+    if st.session_state.projects_data:
+        if len(st.session_state.projects_data) > 0:
+            # Create columns for project cards
+            cols = st.columns(min(3, len(st.session_state.projects_data)))
+            
+            for idx, project in enumerate(st.session_state.projects_data):
+                with cols[idx % len(cols)]:
+                    with st.container():
+                        st.markdown(f"""
+                            <div class="project-card">
+                                <div class="project-name">{project.get('name_of_project', 'Unnamed Project')}</div>
+                                <div class="project-domain">{project.get('domain', 'general').title()}</div>
+                                <div class="project-time">
+                                    <strong>Last Used:</strong> {format_timestamp(project.get('last_used_at', ''))}
+                                </div>
+                                <div class="project-time">
+                                    <strong>Created:</strong> {format_timestamp(project.get('created_at', ''))}
+                                </div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Project actions
+                        project_id = project.get('project_id')
+                        col1_action, col2_action = st.columns(2)
+                        with col1_action:
+                            if st.button("📂 Open", key=f"open_{project_id}", use_container_width=True):
+                                with st.spinner("Opening project..."):
+                                    # Update last used timestamp
+                                    update_result = update_project_last_used(project_id)
+                                    if update_result["success"]:
+                                        st.success(f"Opening {project.get('name_of_project')}...")
+                                        # Here you would navigate to the project page
+                                        # For now, just refresh the project data
+                                        st.session_state.projects_data = None
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed to open project: {update_result['error']}")
+                        
+                        with col2_action:
+                            if st.button("⚙️ Settings", key=f"settings_{project_id}", use_container_width=True):
+                                st.info(f"Settings for {project.get('name_of_project')} coming soon!")
+        else:
+            st.markdown("""
+                <div class="empty-state">
+                    <h3>No projects yet</h3>
+                    <p>Create your first project to get started with analytics!</p>
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("Loading recent projects...")
+    
+    st.markdown("---")
+    
+    # All Projects Section
+    st.markdown('<div class="section-title">📂 All Projects</div>', unsafe_allow_html=True)
+    
+    if st.session_state.all_projects:
+        if len(st.session_state.all_projects) > 0:
+            # Create a table for all projects
+            for project in st.session_state.all_projects:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{project.get('name_of_project', 'Unnamed Project')}**")
+                        st.caption(f"Domain: {project.get('domain', 'general').title()} • ID: {project.get('project_id')}")
+                    
+                    with col2:
+                        st.caption(f"📅 Created: {format_timestamp(project.get('created_at', ''))}")
+                        st.caption(f"⏰ Last Used: {format_timestamp(project.get('last_used_at', ''))}")
+                    
+                    with col3:
+                        project_id = project.get('project_id')
+                        if st.button("Open", key=f"open_all_{project_id}", use_container_width=True):
+                            with st.spinner("Opening..."):
+                                update_result = update_project_last_used(project_id)
+                                if update_result["success"]:
+                                    st.success(f"Opening project...")
+                                    st.session_state.projects_data = None
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to open: {update_result['error']}")
+                    
+                    st.divider()
+        else:
+            st.markdown("""
+                <div class="empty-state">
+                    <h3>No projects found</h3>
+                    <p>Start by creating your first analytics project!</p>
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("Loading all projects...")
+    
+    # Empty space at bottom
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+def main():
+    """Main application router"""
+    
+    # Check if user is logged in
+    if st.session_state.logged_in:
+        home_page()
+    else:
+        # Show login or signup based on current page
+        if st.session_state.current_page == "login":
+            login_page()
+        elif st.session_state.current_page == "signup":
+            signup_page()
+        else:
+            st.session_state.current_page = "login"
+            st.rerun()
 
 if __name__ == "__main__":
     main()
