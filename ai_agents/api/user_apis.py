@@ -8,7 +8,7 @@ from helpers.logger import get_logger
 from pipelines.registration.user_creation import get_next_user_id, add_client_config
 from pipelines.registration.project_creation import get_next_project_id,create_project_object, create_mongodb_collections
 
-
+logger = get_logger()
 # Load environment variables
 load_dotenv()
 
@@ -190,12 +190,12 @@ def run_user_login(email: str, password: str) -> dict:
             }
     """
     try:
-        get_logger.info(f"Login attempt for email: {email}")
+        logger.info(f"Login attempt for email: {email}")
         
         # Connect to MongoDB
         client = connect_to_mongodb()
         if not client:
-            get_logger.error("Database connection failed")
+            logger.error("Database connection failed")
             return {
                 "status": "failed",
                 "message": "Database connection failed"
@@ -209,7 +209,7 @@ def run_user_login(email: str, password: str) -> dict:
         user = users_collection.find_one({"email": email})
         
         if not user:
-            get_logger.warning(f"User not found: {email}")
+            logger.warning(f"User not found: {email}")
             return {
                 "status": "failed",
                 "message": "Invalid email or password"
@@ -220,14 +220,14 @@ def run_user_login(email: str, password: str) -> dict:
         stored_password = user.get("password", "")
         
         if not check_password_hash(stored_password, password):
-            get_logger.warning(f"Invalid password attempt for user: {email}")
+            logger.warning(f"Invalid password attempt for user: {email}")
             return {
                 "status": "failed",
                 "message": "Invalid email or password"
             }
         
         # Login successful - prepare user data
-        get_logger.info(f"Login successful for user: {user.get('user_id')}")
+        logger.info(f"Login successful for user: {user.get('user_id')}")
         
         # Remove sensitive information
         user_data = {
@@ -249,7 +249,7 @@ def run_user_login(email: str, password: str) -> dict:
         }
         
     except Exception as e:
-        get_logger.error(f"Error during login: {str(e)}")
+        logger.error(f"Error during login: {str(e)}")
         return {
             "status": "failed",
             "message": f"Login error: {str(e)}"
