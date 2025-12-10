@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, Tuple
 import json
 import asyncio
 from functools import lru_cache
+import io
 
 # Load environment variables
 load_dotenv()
@@ -163,13 +164,48 @@ class APIClient:
     @staticmethod
     def upload_data(project_id: str, user_id: str, file, file_type: str) -> Dict[str, Any]:
         """Upload data file to project"""
-        files = {"file": (file.name, file.getvalue())}
-        data = {"user_id": user_id, "file_type": file_type}
+        # Convert file bytes to BytesIO object for proper file upload
+        file_bytes = file.getvalue() if hasattr(file, 'getvalue') else file
+        file_name = file.name if hasattr(file, 'name') else 'uploaded_file'
+        
+        # Create a proper file-like object
+        file_obj = io.BytesIO(file_bytes)
+        
+        # Prepare the multipart form data
+        files = {
+            "file": (file_name, file_obj, "application/octet-stream")
+        }
+        data = {
+            "user_id": user_id, 
+            "file_type": file_type
+        }
         
         return APIClient._make_request(
             "POST", f"/upload-data/{project_id}",
             files=files,
             data=data
+        )
+    
+    @staticmethod
+    def get_upload_status(project_id: str, user_id: str) -> Dict[str, Any]:
+        """Get upload status for a project"""
+        return APIClient._make_request(
+            "GET", f"/upload-status/{project_id}",
+            params={"user_id": user_id}
+        )
+    
+    @staticmethod
+    def process_pipeline(project_id: str) -> Dict[str, Any]:
+        """Start data processing pipeline"""
+        return APIClient._make_request(
+            "POST", f"/data-process-pipeline/{project_id}"
+        )
+    
+    @staticmethod
+    def check_pipeline_status(project_id: str) -> Dict[str, Any]:
+        """Check pipeline status"""
+        return APIClient._make_request(
+            "GET", f"/pipeline-status/{project_id}"
         )
 
 # ============================================
@@ -552,6 +588,54 @@ class HomePage:
                 st.rerun()
     
     @staticmethod
+    def _render_delete_confirmation(project_id: str, project_name: str, user_id: str):
+        """Render project deletion confirmation dialog"""
+        st.markdown(f"<div class='section-title'>⚠️ Confirm Deletion</div>", unsafe_allow_html=True)
+        
+        with st.container():
+            st.warning(f"**Are you sure you want to delete '{project_name}'?**")
+            st.markdown("*This action cannot be undone.*")
+            
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                # Confirmation buttons in a container
+                with st.container():
+                    confirm_col1, confirm_col2 = st.columns(2)
+                    
+                    with confirm_col1:
+                        if st.button("✅ Yes, Delete", 
+                                   key="confirm_delete_yes",
+                                   use_container_width=True,
+                                   type="primary"):
+                            with st.spinner("Deleting project..."):
+                                try:
+                                    result = APIClient.delete_project(user_id, project_id)
+                                    if result.get("status") == "success":
+                                        st.success(f"✅ Project '{project_name}' deleted successfully!")
+                                        # Clear confirmation state
+                                        if 'delete_confirmation' in st.session_state:
+                                            del st.session_state.delete_confirmation
+                                        # Clear cached data to force refresh
+                                        st.session_state.projects_data = None
+                                        st.session_state.all_projects = None
+                                        st.session_state.last_refresh = None
+                                        # Force immediate rerun
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {result.get('message', 'Deletion failed')}")
+                                except Exception as e:
+                                    st.error(f"❌ Failed to delete: {str(e)}")
+                    
+                    with confirm_col2:
+                        if st.button("❌ Cancel", 
+                                   key="confirm_delete_no",
+                                   use_container_width=True):
+                            # Clear confirmation state
+                            if 'delete_confirmation' in st.session_state:
+                                del st.session_state.delete_confirmation
+                            st.rerun()
+    
+    @staticmethod
     def _render_project_list(projects: list, title: str, user_id: str, key_suffix: str):
         """Render a list of projects"""
         if not projects:
@@ -565,41 +649,58 @@ class HomePage:
         
         st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
         
-        for project in projects:
-            action, project_id = UIComponents.project_card(project, user_id, key_suffix)
+        for idx, project in enumerate(projects):
+            project_id = project.get('project_id')
+            project_name = project.get('name_of_project', 'Unnamed Project')
+            domain = project.get('domain', 'general')
             
-            if action == "open":
-                with st.spinner("Opening project..."):
-                    try:
-                        APIClient.update_project_last_used(project_id)
-                        st.success(f"Opening {project.get('name_of_project')}...")
-                        st.session_state.projects_data = None
-                        st.session_state.all_projects = None
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to open: {str(e)}")
-            
-            elif action == "delete":
-                # Confirmation dialog
-                col1, col2, col3 = st.columns([1, 2, 1])
+            with st.container():
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**{project_name}**", help=f"Project ID: {project_id}")
+                    domain_badge = UIComponents.get_domain_badge_class(domain)
+                    st.markdown(f'<span class="status-badge {domain_badge}">{domain.title()}</span>', 
+                              unsafe_allow_html=True)
+                
                 with col2:
-                    with st.container():
-                        st.warning(f"Are you sure you want to delete '{project.get('name_of_project')}'?")
-                        confirm_col1, confirm_col2 = st.columns(2)
-                        with confirm_col1:
-                            if st.button("✅ Yes", key=f"confirm_del_{project_id}"):
-                                with st.spinner("Deleting..."):
-                                    try:
-                                        APIClient.delete_project(user_id, project_id)
-                                        st.success("Project deleted successfully!")
-                                        st.session_state.projects_data = None
-                                        st.session_state.all_projects = None
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Failed to delete: {str(e)}")
-                        with confirm_col2:
-                            if st.button("❌ No", key=f"cancel_del_{project_id}"):
-                                st.rerun()
+                    created_at = UIComponents.format_timestamp(project.get('created_at', ''))
+                    last_used = UIComponents.format_timestamp(project.get('last_used_at', ''))
+                    st.caption(f"📅 Created: {created_at}")
+                    st.caption(f"⏰ Last Used: {last_used}")
+                
+                with col3:
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button("📂", 
+                                   key=f"open_{key_suffix}_{project_id}_{idx}",
+                                   help="Open Project", 
+                                   use_container_width=True):
+                            with st.spinner("Opening project..."):
+                                try:
+                                    APIClient.update_project_last_used(project_id)
+                                    st.success(f"Opening {project_name}...")
+                                    # Clear cached data
+                                    st.session_state.projects_data = None
+                                    st.session_state.all_projects = None
+                                    st.session_state.last_refresh = None
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Failed to open: {str(e)}")
+                    
+                    with btn_col2:
+                        if st.button("🗑️", 
+                                   key=f"delete_{key_suffix}_{project_id}_{idx}",
+                                   help="Delete Project",
+                                   use_container_width=True):
+                            # Set the project for deletion confirmation
+                            st.session_state.delete_confirmation = {
+                                'project_id': project_id,
+                                'project_name': project_name
+                            }
+                            st.rerun()
+                
+                st.divider()
     
     @staticmethod
     def render():
@@ -630,6 +731,16 @@ class HomePage:
         
         st.markdown("---")
         
+        # Check if we're showing a delete confirmation
+        if 'delete_confirmation' in st.session_state and st.session_state.delete_confirmation:
+            # Show only the confirmation dialog
+            project_id = st.session_state.delete_confirmation['project_id']
+            project_name = st.session_state.delete_confirmation['project_name']
+            HomePage._render_delete_confirmation(project_id, project_name, user_id)
+            return  # Exit early, don't show project lists
+        
+        # If no delete confirmation, show normal project lists
+        
         # Recent Projects
         HomePage._render_project_list(
             st.session_state.projects_data[:3] if st.session_state.projects_data else [],
@@ -655,7 +766,8 @@ class CreateProjectPage:
     def _reset_upload_state():
         """Reset upload-related states"""
         upload_states = ['project_created', 'created_project_data', 
-                        'uploading_data', 'upload_complete', 'upload_result']
+                        'uploading_data', 'upload_complete', 'upload_result',
+                        'processing_started', 'processing_project_id', 'processing_start_time']
         for state in upload_states:
             if state in st.session_state:
                 del st.session_state[state]
@@ -673,77 +785,137 @@ class CreateProjectPage:
         st.markdown("### 📁 Upload Your Data")
         st.markdown("Upload your dataset to start analyzing. Supported formats: CSV, Excel (XLS/XLSX), JSON")
         
-        with st.form("upload_data_form"):
-            uploaded_file = st.file_uploader(
-                "Choose a file",
-                type=["csv", "xlsx", "xls", "json"],
-                help="Upload CSV, Excel, or JSON files"
+        # Store uploaded file in session state to persist between reruns
+        if 'uploaded_file' not in st.session_state:
+            st.session_state.uploaded_file = None
+        if 'file_type' not in st.session_state:
+            st.session_state.file_type = "auto"
+        
+        uploaded_file = st.file_uploader(
+            "Choose a file",
+            type=["csv", "xlsx", "xls", "json"],
+            help="Upload CSV, Excel, or JSON files",
+            key="file_uploader_widget"
+        )
+        
+        # Update session state when file is uploaded
+        if uploaded_file is not None:
+            st.session_state.uploaded_file = uploaded_file
+            
+            # Auto-detect file type based on extension
+            filename = uploaded_file.name.lower()
+            if filename.endswith('.csv'):
+                st.session_state.file_type = "csv"
+            elif filename.endswith('.xlsx') or filename.endswith('.xls'):
+                st.session_state.file_type = "excel"
+            elif filename.endswith('.json'):
+                st.session_state.file_type = "json"
+            else:
+                st.session_state.file_type = "auto"
+        
+        # Show file info if uploaded
+        if st.session_state.uploaded_file:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.info(f"📄 **Selected file:** {st.session_state.uploaded_file.name}")
+                st.caption(f"Size: {len(st.session_state.uploaded_file.getvalue()) / 1024:.1f} KB")
+            
+            # File type selector
+            file_type = st.selectbox(
+                "File Type",
+                options=["auto", "csv", "excel", "json"],
+                index=["auto", "csv", "excel", "json"].index(st.session_state.file_type),
+                help="Auto-detect or manually select file type"
             )
             
-            if uploaded_file:
-                filename = uploaded_file.name.lower()
-                file_type_map = {
-                    '.csv': 'csv',
-                    '.xlsx': 'excel',
-                    '.xls': 'excel',
-                    '.json': 'json'
-                }
+            # Upload button
+            if st.button("📤 Upload Data", 
+                        type="primary", 
+                        use_container_width=True,
+                        key="upload_data_button"):
                 
-                for ext, ftype in file_type_map.items():
-                    if filename.endswith(ext):
-                        default_type = ftype
-                        break
-                else:
-                    default_type = "auto"
-                
-                file_type = st.selectbox(
-                    "File Type",
-                    options=["auto", "csv", "excel", "json"],
-                    index=0 if default_type == "auto" else ["auto", "csv", "excel", "json"].index(default_type),
-                    help="Auto-detect or manually select file type"
-                )
-            
-            if st.form_submit_button("📤 Upload Data", type="primary", 
-                                   disabled=not uploaded_file, use_container_width=True):
                 with st.spinner("Uploading and processing data..."):
                     try:
-                        result = APIClient.upload_data(project_id, user_id, uploaded_file, file_type)
+                        # Get the file from session state
+                        file_to_upload = st.session_state.uploaded_file
+                        
+                        # Upload the data
+                        result = APIClient.upload_data(
+                            project_id, 
+                            user_id, 
+                            file_to_upload, 
+                            file_type
+                        )
+                        
                         if result.get("status") == "success":
                             st.session_state.upload_complete = True
                             st.session_state.upload_result = result
+                            # Clear uploaded file from session state
+                            if 'uploaded_file' in st.session_state:
+                                del st.session_state.uploaded_file
+                            if 'file_type' in st.session_state:
+                                del st.session_state.file_type
                             st.rerun()
                         else:
                             st.error(f"❌ {result.get('message', 'Upload failed')}")
+                            
                     except Exception as e:
-                        st.error(f"❌ {str(e)}")
+                        st.error(f"❌ Upload failed: {str(e)}")
+                        st.error(f"Details: Make sure the API server is running at {API_URL}")
+        else:
+            st.warning("⚠️ Please select a file to upload")
     
     @staticmethod
     def _render_upload_success():
         """Render upload success section"""
         records_inserted = st.session_state.upload_result.get("records_inserted", 0)
-        columns = st.session_state.upload_result.get("columns", [])
         
         st.success(f"✅ Data uploaded successfully! ({records_inserted} records)")
         
-        with st.expander("📊 Data Preview", expanded=True):
-            if columns:
-                st.write(f"**Columns:** {', '.join(columns)}")
-            sample_data = st.session_state.upload_result.get("sample_data", [])
-            if sample_data:
-                st.write("**Sample data:**")
-                st.json(sample_data[:3])
+        # REMOVED DATA PREVIEW SECTION
         
         st.markdown("---")
-        st.markdown("### 🚀 Ready to Analyze!")
+        st.markdown("### 🚀 Ready to Generate Dashboard!")
         st.markdown("""
-        Your data has been uploaded and is ready for analysis. You can now:
+        Your data has been uploaded and is ready for analysis.
         
-        1. **Run Data Processing** - Automatically analyze data types and structure
-        2. **Generate Insights** - Get AI-powered insights from your data
-        3. **Create Charts** - Visualize your data with smart chart suggestions
+        Click the **Generate Dashboard** button to start the automated data processing pipeline.
+        This will:
+        
+        1. **Analyze Data Structure** - Identify data types and relationships
+        2. **Process Data** - Clean, transform, and prepare your data
+        3. **Generate Insights** - Create AI-powered analytics and visualizations
+        4. **Build Dashboard** - Create an interactive dashboard with key metrics
+        
+        ⏰ **Estimated time:** Approximately 30 minutes
         """)
         
-        col1, col2, col3 = st.columns(3)
+        project_id = st.session_state.created_project_data.get("project_id")
+        
+        # Generate Dashboard button
+        if st.button("🚀 Generate Dashboard", 
+                    type="primary", 
+                    use_container_width=True,
+                    help="Start the data processing pipeline to create your dashboard"):
+            
+            with st.spinner("Starting data processing pipeline..."):
+                try:
+                    # Call the data processing pipeline API
+                    result = APIClient.process_pipeline(project_id)
+                    
+                    if result.get("status") == "success":
+                        st.session_state.processing_started = True
+                        st.session_state.processing_project_id = project_id
+                        st.session_state.processing_start_time = datetime.now()
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {result.get('message', 'Failed to start processing')}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Failed to start processing pipeline: {str(e)}")
+        
+        # Alternative actions
+        col1, col2 = st.columns(2)
         with col1:
             if st.button("🏠 Go to Dashboard", use_container_width=True):
                 CreateProjectPage._reset_upload_state()
@@ -753,12 +925,85 @@ class CreateProjectPage:
                 st.rerun()
         
         with col2:
-            if st.button("🔍 Run Data Processing", type="primary", use_container_width=True):
-                st.info("Data processing pipeline coming soon!")
-        
-        with col3:
             if st.button("➕ Upload More Data", use_container_width=True):
                 CreateProjectPage._reset_upload_state()
+                st.rerun()
+    
+    @staticmethod
+    def _render_processing_section():
+        """Render processing in progress section"""
+        project_id = st.session_state.processing_project_id
+        
+        st.markdown("# ⏳ Dashboard Generation Started")
+        
+        # Show progress information
+        with st.container():
+            st.info("""
+            ## Your dashboard is being generated!
+            
+            We've started the data processing pipeline. This typically takes about **30 minutes** to complete.
+            
+            **What's happening:**
+            - 📊 Analyzing your data structure
+            - 🧹 Cleaning and preparing data
+            - 🔍 Identifying key insights and patterns
+            - 📈 Creating visualizations and metrics
+            - 🎨 Building your interactive dashboard
+            
+            **You can:**
+            - Close this window and come back later
+            - Check your email for completion notification
+            - Return to your projects dashboard
+            
+            We'll notify you when your dashboard is ready!
+            """)
+        
+        # Timer display
+        if st.session_state.processing_start_time:
+            elapsed = datetime.now() - st.session_state.processing_start_time
+            elapsed_minutes = elapsed.total_seconds() / 60
+            
+            # Progress bar
+            progress_percent = min((elapsed_minutes / 30) * 100, 95)  # Cap at 95% until done
+            st.progress(progress_percent / 100)
+            
+            st.caption(f"⏰ Elapsed time: {int(elapsed_minutes)} minutes (Est. 30 minutes total)")
+        
+        # Check status button
+        if st.button("🔄 Check Status", use_container_width=True):
+            with st.spinner("Checking pipeline status..."):
+                try:
+                    # Call status check API
+                    status_result = APIClient.check_pipeline_status(project_id)
+                    
+                    if status_result.get("status") == "completed":
+                        st.success("✅ Dashboard generation completed!")
+                        st.balloons()
+                        # Redirect or show next steps
+                    elif status_result.get("status") == "in_progress":
+                        st.info("Dashboard generation is still in progress...")
+                    elif status_result.get("status") == "failed":
+                        st.error("Dashboard generation failed. Please try again.")
+                    else:
+                        st.info(f"Status: {status_result.get('status', 'unknown')}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Failed to check status: {str(e)}")
+        
+        # Navigation buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🏠 Return to Dashboard", use_container_width=True):
+                CreateProjectPage._reset_upload_state()
+                st.session_state.creating_project = False
+                st.session_state.projects_data = None
+                st.session_state.all_projects = None
+                st.rerun()
+        
+        with col2:
+            if st.button("📋 View My Projects", use_container_width=True):
+                CreateProjectPage._reset_upload_state()
+                st.session_state.creating_project = False
                 st.rerun()
     
     @staticmethod
@@ -770,7 +1015,8 @@ class CreateProjectPage:
             project_name = st.text_input(
                 "Project Name *",
                 placeholder="Enter a descriptive name for your project",
-                help="e.g., Sales Analysis 2024, Customer Behavior Dashboard"
+                help="e.g., Sales Analysis 2024, Customer Behavior Dashboard",
+                key="project_name_input"
             )
             
             domain_options = [
@@ -782,7 +1028,8 @@ class CreateProjectPage:
             domain = st.selectbox(
                 "Domain *",
                 options=domain_options,
-                help="Select the primary domain for your data analysis"
+                help="Select the primary domain for your data analysis",
+                key="domain_select"
             )
             
             if st.form_submit_button("Create Project", type="primary", use_container_width=True):
@@ -801,6 +1048,11 @@ class CreateProjectPage:
                                     "project_id": project.get("project_id"),
                                     "project_name": project.get("name_of_project")
                                 }
+                                # Clear any previous upload state
+                                if 'uploaded_file' in st.session_state:
+                                    del st.session_state.uploaded_file
+                                if 'file_type' in st.session_state:
+                                    del st.session_state.file_type
                                 st.rerun()
                             else:
                                 st.error(f"❌ {result.get('message', 'Project creation failed')}")
@@ -822,6 +1074,11 @@ class CreateProjectPage:
             
             if st.button("← Back to Dashboard", use_container_width=True):
                 CreateProjectPage._reset_upload_state()
+                # Clear uploaded file state
+                if 'uploaded_file' in st.session_state:
+                    del st.session_state.uploaded_file
+                if 'file_type' in st.session_state:
+                    del st.session_state.file_type
                 st.session_state.creating_project = False
                 st.rerun()
         
@@ -829,8 +1086,11 @@ class CreateProjectPage:
         st.markdown(f"# 📊 Create New Project")
         st.markdown("---")
         
+        # Check if processing has started
+        if st.session_state.get('processing_started'):
+            CreateProjectPage._render_processing_section()
         # Show upload section if project was created
-        if st.session_state.get('project_created') and st.session_state.get('created_project_data'):
+        elif st.session_state.get('project_created') and st.session_state.get('created_project_data'):
             if st.session_state.get('upload_complete'):
                 CreateProjectPage._render_upload_success()
             else:

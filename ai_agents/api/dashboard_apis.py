@@ -1,9 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from bson import ObjectId
 import sys
+import io
+import pandas as pd
+import numpy as np
+
 sys.path.append("../..")
 from pipelines.processing.data_type_finding import run_dtf
 from pipelines.processing.data_anomaly import run_cdt
@@ -559,15 +563,28 @@ def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
         logger.error(f"Error deleting project: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
 
-# services/upload_service.py
-import io
-import pandas as pd
-from typing import Dict, List, Any, Optional, Tuple
-from fastapi import HTTPException, UploadFile
-import logging
-
-logger = logging.getLogger(__name__)
-
+def serialize_mongo_doc(doc: Dict) -> Dict:
+    """
+    Convert MongoDB document to JSON-serializable format
+    Converts ObjectId to string
+    """
+    if doc is None:
+        return None
+    
+    serialized = {}
+    for key, value in doc.items():
+        if isinstance(value, ObjectId):
+            serialized[key] = str(value)
+        elif isinstance(value, dict):
+            serialized[key] = serialize_mongo_doc(value)
+        elif isinstance(value, list):
+            serialized[key] = [
+                serialize_mongo_doc(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            serialized[key] = value
+    return serialized
 
 def validate_project_access(
     mongo_client,
@@ -605,16 +622,6 @@ def validate_project_access(
 def detect_file_type(filename: str, file_type: str) -> str:
     """
     Detect file type based on extension or provided type
-    
-    Args:
-        filename: Name of the uploaded file
-        file_type: Provided file type or 'auto'
-    
-    Returns:
-        Detected file type (csv, excel, json)
-    
-    Raises:
-        HTTPException: If file type is unsupported
     """
     if file_type != "auto":
         return file_type
@@ -630,19 +637,10 @@ def detect_file_type(filename: str, file_type: str) -> str:
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
 
+
 def parse_file_to_dataframe(contents: bytes, file_type: str) -> pd.DataFrame:
     """
     Parse file contents into pandas DataFrame
-    
-    Args:
-        contents: File contents as bytes
-        file_type: Type of file (csv, excel, json)
-    
-    Returns:
-        Parsed DataFrame
-    
-    Raises:
-        HTTPException: If parsing fails
     """
     try:
         if file_type == 'csv':
@@ -662,35 +660,34 @@ def upload_data_to_project(
     mongo_client,
     project_id: str,
     user_id: str,
-    file: UploadFile,
+    file_contents: bytes,
+    filename: str,
     file_type: str = "auto"
 ) -> Dict[str, Any]:
     """
     Upload data file to a project
     
     Args:
-        mongo_client: MongoDB client instance
-        project_id: Project ID
-        user_id: User ID
-        file: Uploaded file
-        file_type: File type (csv, excel, json, auto)
+        mongo_client: MongoDB client
+        project_id: Project identifier
+        user_id: User identifier
+        file_contents: File contents as bytes
+        filename: Original filename
+        file_type: File type (csv, excel, json, or auto)
     
     Returns:
-        Dict with upload results
+        Upload status and statistics
     """
     logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
     
     # Validate project access
     client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
     
-    # Read file content
-    contents = file.file.read() if hasattr(file, 'file') else file
-    
     # Detect file type
-    detected_file_type = detect_file_type(file.filename, file_type)
+    detected_file_type = detect_file_type(filename, file_type)
     
     # Parse file to DataFrame
-    df = parse_file_to_dataframe(contents, detected_file_type)
+    df = parse_file_to_dataframe(file_contents, detected_file_type)
     
     # Convert to records
     records = df.to_dict('records')
@@ -710,13 +707,110 @@ def upload_data_to_project(
     
     logger.info(f"Uploaded {records_inserted} records to {collection_name}")
     
+    # Prepare sample data without ObjectId fields
+    sample_data = []
+    if records:
+        for record in records[:5]:
+            # Create a copy without _id field
+            sample_record = {k: v for k, v in record.items() if k != '_id'}
+            sample_data.append(sample_record)
+    
     return {
         "status": "success",
         "message": "Data uploaded successfully",
         "records_inserted": records_inserted,
         "collection_name": collection_name,
         "columns": list(df.columns),
-        "sample_data": records[:5] if records else []
+        "sample_data": sample_data
+    }
+
+def clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean DataFrame to ensure JSON compatibility
+    - Replace NaN with None
+    - Replace infinity with None
+    - Handle other non-JSON-compliant values
+    """
+    # Replace pandas NA types
+    df = df.replace({pd.NA: None, pd.NaT: None})
+    
+    # Replace NaN and infinity values with None
+    df = df.replace([np.nan, np.inf, -np.inf], None)
+    
+    # Ensure all NaN values are converted to None
+    df = df.where(pd.notnull(df), None)
+    
+    return df
+
+def upload_data_to_project(
+    mongo_client,
+    project_id: str,
+    user_id: str,
+    file_contents: bytes,
+    filename: str,
+    file_type: str = "auto"
+) -> Dict[str, Any]:
+    """
+    Upload data file to a project
+    
+    Args:
+        mongo_client: MongoDB client
+        project_id: Project identifier
+        user_id: User identifier
+        file_contents: File contents as bytes
+        filename: Original filename
+        file_type: File type (csv, excel, json, or auto)
+    
+    Returns:
+        Upload status and statistics
+    """
+    logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
+    
+    # Validate project access
+    client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
+    
+    # Detect file type
+    detected_file_type = detect_file_type(filename, file_type)
+    
+    # Parse file to DataFrame
+    df = parse_file_to_dataframe(file_contents, detected_file_type)
+    
+    # Clean DataFrame for JSON compatibility
+    df = clean_dataframe_for_json(df)
+    
+    # Convert to records
+    records = df.to_dict('records')
+    
+    if not records:
+        raise HTTPException(status_code=400, detail="No data found in file")
+    
+    # Prepare collection
+    collection_name = f"{project_id}_data"
+    user_db = mongo_client[db_name]
+    collection = user_db[collection_name]
+    
+    # Clear existing data and insert new data
+    collection.delete_many({})
+    result = collection.insert_many(records)
+    records_inserted = len(result.inserted_ids)
+    
+    logger.info(f"Uploaded {records_inserted} records to {collection_name}")
+    
+    # Prepare sample data without ObjectId fields and ensure JSON compatibility
+    sample_data = []
+    if records:
+        for record in records[:5]:
+            # Create a copy without _id field
+            sample_record = {k: v for k, v in record.items() if k != '_id'}
+            sample_data.append(sample_record)
+    
+    return {
+        "status": "success",
+        "message": "Data uploaded successfully",
+        "records_inserted": records_inserted,
+        "collection_name": collection_name,
+        "columns": list(df.columns),
+        "sample_data": sample_data
     }
 
 
@@ -729,13 +823,15 @@ def get_project_upload_status(
     Check if project has data uploaded
     
     Args:
-        mongo_client: MongoDB client instance
-        project_id: Project ID
-        user_id: User ID
+        mongo_client: MongoDB client
+        project_id: Project identifier
+        user_id: User identifier
     
     Returns:
-        Dict with upload status information
+        Upload status information including record count and last upload time
     """
+    logger.info(f"Checking upload status for project: {project_id}, user: {user_id}")
+    
     # Validate project access
     client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
     
@@ -745,6 +841,7 @@ def get_project_upload_status(
     
     if collection_name not in user_db.list_collection_names():
         return {
+            "status": "success",
             "has_data": False,
             "records_count": 0,
             "collection_name": collection_name
@@ -757,11 +854,23 @@ def get_project_upload_status(
     last_uploaded = None
     last_doc = collection.find_one(sort=[("_id", -1)])
     if last_doc and "_id" in last_doc:
-        last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
+        try:
+            last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
+        except Exception as e:
+            logger.warning(f"Could not extract timestamp from ObjectId: {str(e)}")
+    
+    # Get columns from first document if data exists
+    columns = []
+    if count > 0:
+        first_doc = collection.find_one()
+        if first_doc:
+            columns = [k for k in first_doc.keys() if k != '_id']
     
     return {
+        "status": "success",
         "has_data": count > 0,
         "records_count": count,
         "last_uploaded": last_uploaded,
-        "collection_name": collection_name
+        "collection_name": collection_name,
+        "columns": columns
     }
