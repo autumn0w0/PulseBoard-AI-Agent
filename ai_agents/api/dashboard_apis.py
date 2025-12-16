@@ -8,6 +8,8 @@ import sys
 import io
 import pandas as pd
 import numpy as np
+from functools import lru_cache
+from contextlib import contextmanager
 
 sys.path.append("../..")
 from pipelines.processing.data_type_finding import run_dtf
@@ -26,585 +28,206 @@ logger = logging.getLogger(__name__)
 # Initialize router
 router = APIRouter()
 
+# Constants
+SUPPORTED_FILE_EXTENSIONS = {
+    '.csv': 'csv',
+    '.xlsx': 'excel',
+    '.xls': 'excel',
+    '.json': 'json'
+}
+
+PIPELINE_STEPS = [
+    ("data_type_finding", run_dtf, "Data type finding"),
+    ("data_anomaly", run_cdt, "Data anomaly detection"),
+    ("chart_suggestion", run_cs, "Chart suggestion"),
+    ("chart_pipeline", run_chart_pipeline, "Chart pipeline"),
+    ("data_flattened_weaviate", run_dfw, "Data flattening for Weaviate"),
+    ("vectorization", run_v, "Vectorization"),
+    ("data_to_weaviate", run_dtw, "Data to Weaviate")
+]
+
+
+@contextmanager
+def get_mongo_connection():
+    """Context manager for MongoDB connections"""
+    client = connect_to_mongodb()
+    if not client:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        yield client
+    finally:
+        # Add cleanup if needed
+        pass
+
 
 def run_pdp(project_id: str) -> Dict[str, Any]:
     """
     Run the complete Project Data Pipeline (PDP) for a given project.
-    
-    Args:
-        project_id: The unique identifier for the project
-        
-    Returns:
-        Dictionary containing results from all pipeline steps
-        
-    Raises:
-        HTTPException: If any step in the pipeline fails
+    Optimized with unified error handling and logging.
     """
     results = {}
     
-    # Step 1: Run Data Type Finding
-    logger.info(f"Step 1: Running data type finding for project {project_id}")
-    try:
-        dtf_result = run_dtf(project_id)
-        results["data_type_finding"] = dtf_result
-        logger.info(f"Data type finding completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in data type finding: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Data type finding failed: {str(e)}")
-    
-    # Step 2: Run Data Anomaly Detection
-    logger.info(f"Step 2: Running data anomaly detection for project {project_id}")
-    try:
-        cdt_result = run_cdt(project_id)
-        results["data_anomaly"] = cdt_result
-        logger.info(f"Data anomaly detection completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in data anomaly detection: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Data anomaly detection failed: {str(e)}")
-    
-    # Step 3: Run Chart Suggestion
-    logger.info(f"Step 3: Running chart suggestion for project {project_id}")
-    try:
-        cs_result = run_cs(project_id)
-        results["chart_suggestion"] = cs_result
-        logger.info(f"Chart suggestion completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in chart suggestion: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Chart suggestion failed: {str(e)}")
-    
-    # Step 4: Run Chart Pipeline
-    logger.info(f"Step 4: Running chart pipeline for project {project_id}")
-    try:
-        chart_pipeline_result = run_chart_pipeline(project_id)
-        results["chart_pipeline"] = chart_pipeline_result
-        logger.info(f"Chart pipeline completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in chart pipeline: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Chart pipeline failed: {str(e)}")
-    
-    # Step 5: Run Data Flattening for Weaviate
-    logger.info(f"Step 5: Running data flattening for Weaviate for project {project_id}")
-    try:
-        dfw_result = run_dfw(project_id)
-        results["data_flattened_weaviate"] = dfw_result
-        logger.info(f"Data flattening for Weaviate completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in data flattening for Weaviate: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Data flattening for Weaviate failed: {str(e)}")
-    
-    # Step 6: Run Vectorization
-    logger.info(f"Step 6: Running vectorization for project {project_id}")
-    try:
-        v_result = run_v(project_id)
-        results["vectorization"] = v_result
-        logger.info(f"Vectorization completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in vectorization: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Vectorization failed: {str(e)}")
-    
-    # Step 7: Run Data to Weaviate
-    logger.info(f"Step 7: Running data to Weaviate for project {project_id}")
-    try:
-        dtw_result = run_dtw(project_id)
-        results["data_to_weaviate"] = dtw_result
-        logger.info(f"Data to Weaviate completed for project {project_id}")
-    except Exception as e:
-        logger.error(f"Error in data to Weaviate: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Data to Weaviate failed: {str(e)}")
+    for step_num, (result_key, pipeline_func, step_name) in enumerate(PIPELINE_STEPS, 1):
+        logger.info(f"Step {step_num}: Running {step_name} for project {project_id}")
+        try:
+            results[result_key] = pipeline_func(project_id)
+            logger.info(f"{step_name} completed for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error in {step_name}: {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"{step_name} failed: {str(e)}"
+            )
     
     logger.info(f"Project Data Pipeline completed successfully for project {project_id}")
     return results
 
-def get_user_details(user_id: str) -> Dict[str, Any]:
-    """
-    Get user details from the user collection
+
+def serialize_mongo_doc(doc: Dict) -> Dict:
+    """Convert MongoDB document to JSON-serializable format"""
+    if doc is None:
+        return None
     
-    Args:
-        user_id: The user's unique identifier
-        
-    Returns:
-        Dictionary containing user details
-        
-    Raises:
-        HTTPException: If user not found or database error
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and user collection
-        master_db = mongo_client["master"]
-        users_collection = master_db["user"]
-        
-        # Find user by user_id
+    return {
+        key: (
+            str(value) if isinstance(value, ObjectId) else
+            serialize_mongo_doc(value) if isinstance(value, dict) else
+            [serialize_mongo_doc(item) if isinstance(item, dict) else item 
+             for item in value] if isinstance(value, list) else
+            value
+        )
+        for key, value in doc.items()
+    }
+
+
+def format_timestamp(timestamp: Any) -> Optional[str]:
+    """Convert various timestamp formats to ISO string"""
+    if timestamp is None:
+        return None
+    if isinstance(timestamp, dict) and "$date" in timestamp:
+        return timestamp["$date"].isoformat() + "Z"
+    if isinstance(timestamp, datetime):
+        return timestamp.isoformat() + "Z"
+    return None
+
+
+def format_project_timestamps(project: Dict) -> None:
+    """Format created_at and last_used_at timestamps in place"""
+    project["created_at"] = format_timestamp(project.get("created_at"))
+    project["last_used_at"] = format_timestamp(project.get("last_used_at"))
+    project.pop("mongodb", None)
+    project.pop("weaviate", None)
+
+
+def get_last_used_datetime(project: Dict) -> datetime:
+    """Extract datetime from project for sorting"""
+    last_used = project.get("last_used_at")
+    if isinstance(last_used, dict) and "$date" in last_used:
+        return last_used["$date"]
+    if isinstance(last_used, datetime):
+        return last_used
+    return datetime.min
+
+
+def get_user_details(user_id: str) -> Dict[str, Any]:
+    """Get user details from the user collection"""
+    with get_mongo_connection() as mongo_client:
+        users_collection = mongo_client["master"]["user"]
         user = users_collection.find_one({"user_id": user_id})
         
         if not user:
-            logger.warning(f"User not found with user_id: {user_id}")
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Convert ObjectId to string and remove sensitive data
         user["_id"] = str(user["_id"])
-        user.pop("password", None)  # Remove password for security
+        user.pop("password", None)
         
         logger.info(f"Retrieved user details for user_id: {user_id}")
         return user
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving user details: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve user details: {str(e)}")
 
-def get_recent_projects(user_id: str, limit: int = 3) -> List[Dict[str, Any]]:
+
+def get_projects_sorted(user_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """
-    Get recent projects for a user, sorted by last_used_at (most recent first)
-    
-    Args:
-        user_id: The user's unique identifier
-        limit: Maximum number of projects to return (default: 3)
-        
-    Returns:
-        List of project dictionaries
-        
-    Raises:
-        HTTPException: If database error occurs
+    Get projects for a user, sorted by last_used_at.
+    Unified function for both recent and all projects.
     """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and client_config collection
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
+    with get_mongo_connection() as mongo_client:
+        client_config = mongo_client["master"]["client_config"].find_one(
+            {"user_id": user_id}
+        )
         
         if not client_config or "projects" not in client_config:
             logger.info(f"No projects found for user_id: {user_id}")
             return []
         
-        # Get projects array
         projects = client_config.get("projects", [])
+        sorted_projects = sorted(projects, key=get_last_used_datetime, reverse=True)
         
-        # Helper function to extract datetime for sorting
-        def get_last_used_datetime(project):
-            last_used = project.get("last_used_at")
-            if last_used is None:
-                return datetime.min
-            # Handle both formats: direct datetime or {"$date": datetime}
-            if isinstance(last_used, dict) and "$date" in last_used:
-                return last_used["$date"]
-            elif isinstance(last_used, datetime):
-                return last_used
-            else:
-                return datetime.min
+        if limit:
+            sorted_projects = sorted_projects[:limit]
         
-        # Sort projects by last_used_at in descending order (most recent first)
-        sorted_projects = sorted(
-            projects, 
-            key=get_last_used_datetime,
-            reverse=True
-        )
-        
-        # Limit the number of projects
-        recent_projects = sorted_projects[:limit]
-        
-        # Convert timestamps to ISO format strings
-        for project in recent_projects:
-            # Convert created_at
-            created_at = project.get("created_at")
-            if isinstance(created_at, dict) and "$date" in created_at:
-                project["created_at"] = created_at["$date"].isoformat() + "Z"
-            elif isinstance(created_at, datetime):
-                project["created_at"] = created_at.isoformat() + "Z"
-            
-            # Convert last_used_at
-            last_used_at = project.get("last_used_at")
-            if isinstance(last_used_at, dict) and "$date" in last_used_at:
-                project["last_used_at"] = last_used_at["$date"].isoformat() + "Z"
-            elif isinstance(last_used_at, datetime):
-                project["last_used_at"] = last_used_at.isoformat() + "Z"
-            
-            # Remove MongoDB/Weaviate collections if present to reduce response size
-            project.pop("mongodb", None)
-            project.pop("weaviate", None)
-        
-        logger.info(f"Retrieved {len(recent_projects)} recent projects for user_id: {user_id}")
-        return recent_projects
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving recent projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve recent projects: {str(e)}")
-
-def get_all_projects(user_id: str) -> List[Dict[str, Any]]:
-    """
-    Get all projects for a user, sorted by last_used_at (most recent first)
-    
-    Args:
-        user_id: The user's unique identifier
-        
-    Returns:
-        List of all project dictionaries
-        
-    Raises:
-        HTTPException: If database error occurs
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and client_config collection
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            logger.info(f"No projects found for user_id: {user_id}")
-            return []
-        
-        # Get projects array
-        projects = client_config.get("projects", [])
-        
-        # Helper function to extract datetime for sorting
-        def get_last_used_datetime(project):
-            last_used = project.get("last_used_at")
-            if last_used is None:
-                return datetime.min
-            # Handle both formats: direct datetime or {"$date": datetime}
-            if isinstance(last_used, dict) and "$date" in last_used:
-                return last_used["$date"]
-            elif isinstance(last_used, datetime):
-                return last_used
-            else:
-                return datetime.min
-        
-        # Sort projects by last_used_at in descending order (most recent first)
-        sorted_projects = sorted(
-            projects, 
-            key=get_last_used_datetime,
-            reverse=True
-        )
-        
-        # Convert timestamps to ISO format strings
         for project in sorted_projects:
-            # Convert created_at
-            created_at = project.get("created_at")
-            if isinstance(created_at, dict) and "$date" in created_at:
-                project["created_at"] = created_at["$date"].isoformat() + "Z"
-            elif isinstance(created_at, datetime):
-                project["created_at"] = created_at.isoformat() + "Z"
-            
-            # Convert last_used_at
-            last_used_at = project.get("last_used_at")
-            if isinstance(last_used_at, dict) and "$date" in last_used_at:
-                project["last_used_at"] = last_used_at["$date"].isoformat() + "Z"
-            elif isinstance(last_used_at, datetime):
-                project["last_used_at"] = last_used_at.isoformat() + "Z"
-            
-            # Remove MongoDB/Weaviate collections if present to reduce response size
-            project.pop("mongodb", None)
-            project.pop("weaviate", None)
+            format_project_timestamps(project)
         
         logger.info(f"Retrieved {len(sorted_projects)} projects for user_id: {user_id}")
         return sorted_projects
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving all projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve projects: {str(e)}")
+
+
+def get_recent_projects(user_id: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """Get recent projects for a user"""
+    return get_projects_sorted(user_id, limit)
+
+
+def get_all_projects(user_id: str) -> List[Dict[str, Any]]:
+    """Get all projects for a user"""
+    return get_projects_sorted(user_id)
+
 
 def update_project_last_used(user_id: str, project_id: str) -> Dict[str, Any]:
-    """
-    Update the last_used_at timestamp for a project
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
-        
-    Returns:
-        Updated project information
-        
-    Raises:
-        HTTPException: If project not found or database error
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and client_config collection
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Current timestamp in UTC
+    """Update the last_used_at timestamp for a project"""
+    with get_mongo_connection() as mongo_client:
+        client_config_collection = mongo_client["master"]["client_config"]
         current_time = datetime.now(timezone.utc)
         
-        # Update the specific project's last_used_at field
-        # Using arrayFilters to target the specific project within the projects array
         result = client_config_collection.find_one_and_update(
-            {
-                "user_id": user_id,
-                "projects.project_id": project_id
-            },
-            {
-                "$set": {
-                    "projects.$.last_used_at": {"$date": current_time}
-                }
-            },
+            {"user_id": user_id, "projects.project_id": project_id},
+            {"$set": {"projects.$.last_used_at": {"$date": current_time}}},
             return_document=True
         )
         
         if not result:
-            logger.warning(f"Project not found: user_id={user_id}, project_id={project_id}")
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Find the updated project
-        updated_project = None
         for project in result.get("projects", []):
             if project.get("project_id") == project_id:
-                updated_project = project
-                
-                # Convert timestamps to ISO format
-                if "created_at" in project and "$date" in project["created_at"]:
-                    project["created_at"] = project["created_at"]["$date"].isoformat() + "Z"
-                
-                if "last_used_at" in project and "$date" in project["last_used_at"]:
-                    project["last_used_at"] = project["last_used_at"]["$date"].isoformat() + "Z"
-                
-                # Remove MongoDB/Weaviate collections
-                project.pop("mongodb", None)
-                project.pop("weaviate", None)
-                break
+                format_project_timestamps(project)
+                logger.info(f"Updated last_used_at for project: {project_id}")
+                return project
         
-        if not updated_project:
-            logger.error(f"Failed to find updated project after update: {project_id}")
-            raise HTTPException(status_code=500, detail="Failed to retrieve updated project")
-        
-        logger.info(f"Updated last_used_at for project: {project_id} to {current_time}")
-        return updated_project
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating project last_used_at: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to update project: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve updated project")
+
 
 def get_user_projects_count(user_id: str) -> Dict[str, int]:
-    """
-    Get the count of projects for a user
-    
-    Args:
-        user_id: The user's unique identifier
-        
-    Returns:
-        Dictionary with project count
-        
-    Raises:
-        HTTPException: If database error occurs
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and client_config collection
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            return {"total_projects": 0}
-        
-        total_projects = len(client_config.get("projects", []))
-        
-        logger.info(f"Retrieved project count for user_id: {user_id} - total: {total_projects}")
-        return {"total_projects": total_projects}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error counting user projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to count projects: {str(e)}")
-    
-def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
-    """
-    Delete a project and all its associated data from MongoDB and Weaviate
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
-        
-    Returns:
-        Dictionary containing deletion results
-        
-    Raises:
-        HTTPException: If project not found or deletion fails
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # Access the master database and client_config collection
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # First, find the project to get collection names
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config:
-            logger.warning(f"User not found: {user_id}")
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Find the specific project
-        project_to_delete = None
-        project_index = -1
-        for idx, project in enumerate(client_config.get("projects", [])):
-            if project.get("project_id") == project_id:
-                project_to_delete = project
-                project_index = idx
-                break
-        
-        if not project_to_delete:
-            logger.warning(f"Project not found: {project_id}")
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        # Get database name for user
-        db_name = client_config.get("db_name", user_id)
-        
-        # Step 1: Delete MongoDB collections
-        mongo_collections_deleted = []
-        if "mongodb" in project_to_delete and "collections" in project_to_delete["mongodb"]:
-            mongo_collections = project_to_delete["mongodb"]["collections"]
-            
-            for collection_key, collection_name in mongo_collections.items():
-                try:
-                    # Access the user's database and drop the collection
-                    user_db = mongo_client[db_name]
-                    collection = user_db[collection_name]
-                    
-                    # Drop the collection
-                    collection.drop()
-                    mongo_collections_deleted.append(collection_name)
-                    logger.info(f"Deleted MongoDB collection: {collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete MongoDB collection {collection_name}: {str(e)}")
-        
-        # Step 2: Delete Weaviate collections
-        weaviate_collections_deleted = []
-        if "weaviate" in project_to_delete and "collections" in project_to_delete["weaviate"]:
-            weaviate_collections = project_to_delete["weaviate"]["collections"]
-            
-            try:
-                
-                # Connect to Weaviate
-                weaviate_client = connect_to_weaviatedb()
-                if weaviate_client:
-                    for collection_key, collection_name in weaviate_collections.items():
-                        try:
-                            # Delete Weaviate collection
-                            weaviate_client.collections.delete(collection_name)
-                            weaviate_collections_deleted.append(collection_name)
-                            logger.info(f"Deleted Weaviate collection: {collection_name}")
-                        except Exception as e:
-                            logger.warning(f"Failed to delete Weaviate collection {collection_name}: {str(e)}")
-                else:
-                    logger.warning("Failed to connect to Weaviate")
-            except Exception as e:
-                logger.error(f"Error connecting to Weaviate: {str(e)}")
-        
-        # Step 3: Remove project from client_config
-        result = client_config_collection.update_one(
-            {"user_id": user_id},
-            {"$pull": {"projects": {"project_id": project_id}}}
+    """Get the count of projects for a user"""
+    with get_mongo_connection() as mongo_client:
+        client_config = mongo_client["master"]["client_config"].find_one(
+            {"user_id": user_id}
         )
         
-        if result.modified_count == 0:
-            logger.error(f"Failed to remove project from client_config: {project_id}")
-            raise HTTPException(status_code=500, detail="Failed to remove project from configuration")
-        
-        logger.info(f"Successfully deleted project: {project_id}")
-        
-        return {
-            "project_id": project_id,
-            "project_name": project_to_delete.get("name_of_project", ""),
-            "mongo_collections_deleted": mongo_collections_deleted,
-            "weaviate_collections_deleted": weaviate_collections_deleted,
-            "total_mongo_collections": len(mongo_collections_deleted),
-            "total_weaviate_collections": len(weaviate_collections_deleted)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting project: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+        total = len(client_config.get("projects", [])) if client_config else 0
+        logger.info(f"Retrieved project count for user_id: {user_id} - total: {total}")
+        return {"total_projects": total}
 
-def serialize_mongo_doc(doc: Dict) -> Dict:
-    """
-    Convert MongoDB document to JSON-serializable format
-    Converts ObjectId to string
-    """
-    if doc is None:
-        return None
-    
-    serialized = {}
-    for key, value in doc.items():
-        if isinstance(value, ObjectId):
-            serialized[key] = str(value)
-        elif isinstance(value, dict):
-            serialized[key] = serialize_mongo_doc(value)
-        elif isinstance(value, list):
-            serialized[key] = [
-                serialize_mongo_doc(item) if isinstance(item, dict) else item
-                for item in value
-            ]
-        else:
-            serialized[key] = value
-    return serialized
 
 def validate_project_access(
     mongo_client,
     user_id: str,
     project_id: str
 ) -> Tuple[Dict, str]:
-    """
-    Validate if project exists and belongs to user
+    """Validate if project exists and belongs to user"""
+    client_config = mongo_client["master"]["client_config"].find_one(
+        {"user_id": user_id}
+    )
     
-    Returns:
-        Tuple of (client_config, db_name)
-    
-    Raises:
-        HTTPException: If validation fails
-    """
-    master_db = mongo_client["master"]
-    client_config_collection = master_db["client_config"]
-    
-    client_config = client_config_collection.find_one({"user_id": user_id})
     if not client_config:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -616,132 +239,121 @@ def validate_project_access(
     if not project_exists:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    db_name = client_config.get("db_name", user_id)
-    return client_config, db_name
+    return client_config, client_config.get("db_name", user_id)
+
+
+def delete_collections(client, collection_names: Dict, collection_type: str) -> List[str]:
+    """Generic function to delete collections"""
+    deleted = []
+    for collection_name in collection_names.values():
+        try:
+            if collection_type == "mongodb":
+                client[collection_name].drop()
+            else:  # weaviate
+                client.collections.delete(collection_name)
+            deleted.append(collection_name)
+            logger.info(f"Deleted {collection_type} collection: {collection_name}")
+        except Exception as e:
+            logger.warning(f"Failed to delete {collection_type} collection {collection_name}: {str(e)}")
+    return deleted
+
+
+def delete_project(user_id: str, project_id: str) -> Dict[str, Any]:
+    """Delete a project and all its associated data"""
+    with get_mongo_connection() as mongo_client:
+        client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
+        
+        # Find the project
+        project_to_delete = next(
+            (p for p in client_config.get("projects", []) if p.get("project_id") == project_id),
+            None
+        )
+        
+        if not project_to_delete:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Delete MongoDB collections
+        mongo_collections_deleted = []
+        if "mongodb" in project_to_delete and "collections" in project_to_delete["mongodb"]:
+            user_db = mongo_client[db_name]
+            mongo_collections_deleted = delete_collections(
+                user_db, 
+                project_to_delete["mongodb"]["collections"],
+                "mongodb"
+            )
+        
+        # Delete Weaviate collections
+        weaviate_collections_deleted = []
+        if "weaviate" in project_to_delete and "collections" in project_to_delete["weaviate"]:
+            try:
+                weaviate_client = connect_to_weaviatedb()
+                if weaviate_client:
+                    weaviate_collections_deleted = delete_collections(
+                        weaviate_client,
+                        project_to_delete["weaviate"]["collections"],
+                        "weaviate"
+                    )
+            except Exception as e:
+                logger.error(f"Error connecting to Weaviate: {str(e)}")
+        
+        # Remove project from config
+        result = mongo_client["master"]["client_config"].update_one(
+            {"user_id": user_id},
+            {"$pull": {"projects": {"project_id": project_id}}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to remove project from configuration")
+        
+        logger.info(f"Successfully deleted project: {project_id}")
+        return {
+            "project_id": project_id,
+            "project_name": project_to_delete.get("name_of_project", ""),
+            "mongo_collections_deleted": mongo_collections_deleted,
+            "weaviate_collections_deleted": weaviate_collections_deleted,
+            "total_mongo_collections": len(mongo_collections_deleted),
+            "total_weaviate_collections": len(weaviate_collections_deleted)
+        }
 
 
 def detect_file_type(filename: str, file_type: str) -> str:
-    """
-    Detect file type based on extension or provided type
-    """
+    """Detect file type based on extension or provided type"""
     if file_type != "auto":
         return file_type
     
-    filename_lower = filename.lower()
-    if filename_lower.endswith('.csv'):
-        return 'csv'
-    elif filename_lower.endswith(('.xlsx', '.xls')):
-        return 'excel'
-    elif filename_lower.endswith('.json'):
-        return 'json'
-    else:
+    extension = '.' + filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
+    detected_type = SUPPORTED_FILE_EXTENSIONS.get(extension)
+    
+    if not detected_type:
         raise HTTPException(status_code=400, detail="Unsupported file type")
-
+    
+    return detected_type
 
 
 def parse_file_to_dataframe(contents: bytes, file_type: str) -> pd.DataFrame:
-    """
-    Parse file contents into pandas DataFrame
-    """
+    """Parse file contents into pandas DataFrame"""
+    parsers = {
+        'csv': pd.read_csv,
+        'excel': pd.read_excel,
+        'json': pd.read_json
+    }
+    
+    parser = parsers.get(file_type)
+    if not parser:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    
     try:
-        if file_type == 'csv':
-            return pd.read_csv(io.BytesIO(contents))
-        elif file_type == 'excel':
-            return pd.read_excel(io.BytesIO(contents))
-        elif file_type == 'json':
-            return pd.read_json(io.BytesIO(contents))
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
+        return parser(io.BytesIO(contents))
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error parsing file: {str(e)}")
 
 
-def upload_data_to_project(
-    mongo_client,
-    project_id: str,
-    user_id: str,
-    file_contents: bytes,
-    filename: str,
-    file_type: str = "auto"
-) -> Dict[str, Any]:
-    """
-    Upload data file to a project
-    
-    Args:
-        mongo_client: MongoDB client
-        project_id: Project identifier
-        user_id: User identifier
-        file_contents: File contents as bytes
-        filename: Original filename
-        file_type: File type (csv, excel, json, or auto)
-    
-    Returns:
-        Upload status and statistics
-    """
-    logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
-    
-    # Validate project access
-    client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
-    
-    # Detect file type
-    detected_file_type = detect_file_type(filename, file_type)
-    
-    # Parse file to DataFrame
-    df = parse_file_to_dataframe(file_contents, detected_file_type)
-    
-    # Convert to records
-    records = df.to_dict('records')
-    
-    if not records:
-        raise HTTPException(status_code=400, detail="No data found in file")
-    
-    # Prepare collection
-    collection_name = f"{project_id}_data"
-    user_db = mongo_client[db_name]
-    collection = user_db[collection_name]
-    
-    # Clear existing data and insert new data
-    collection.delete_many({})
-    result = collection.insert_many(records)
-    records_inserted = len(result.inserted_ids)
-    
-    logger.info(f"Uploaded {records_inserted} records to {collection_name}")
-    
-    # Prepare sample data without ObjectId fields
-    sample_data = []
-    if records:
-        for record in records[:5]:
-            # Create a copy without _id field
-            sample_record = {k: v for k, v in record.items() if k != '_id'}
-            sample_data.append(sample_record)
-    
-    return {
-        "status": "success",
-        "message": "Data uploaded successfully",
-        "records_inserted": records_inserted,
-        "collection_name": collection_name,
-        "columns": list(df.columns),
-        "sample_data": sample_data
-    }
-
 def clean_dataframe_for_json(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Clean DataFrame to ensure JSON compatibility
-    - Replace NaN with None
-    - Replace infinity with None
-    - Handle other non-JSON-compliant values
-    """
-    # Replace pandas NA types
-    df = df.replace({pd.NA: None, pd.NaT: None})
-    
-    # Replace NaN and infinity values with None
-    df = df.replace([np.nan, np.inf, -np.inf], None)
-    
-    # Ensure all NaN values are converted to None
-    df = df.where(pd.notnull(df), None)
-    
-    return df
+    """Clean DataFrame to ensure JSON compatibility"""
+    df = df.replace({pd.NA: None, pd.NaT: None, np.nan: None, np.inf: None, -np.inf: None})
+    return df.where(pd.notnull(df), None)
+
 
 def upload_data_to_project(
     mongo_client,
@@ -751,59 +363,32 @@ def upload_data_to_project(
     filename: str,
     file_type: str = "auto"
 ) -> Dict[str, Any]:
-    """
-    Upload data file to a project
-    
-    Args:
-        mongo_client: MongoDB client
-        project_id: Project identifier
-        user_id: User identifier
-        file_contents: File contents as bytes
-        filename: Original filename
-        file_type: File type (csv, excel, json, or auto)
-    
-    Returns:
-        Upload status and statistics
-    """
+    """Upload data file to a project"""
     logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
     
-    # Validate project access
     client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
-    
-    # Detect file type
     detected_file_type = detect_file_type(filename, file_type)
     
-    # Parse file to DataFrame
     df = parse_file_to_dataframe(file_contents, detected_file_type)
-    
-    # Clean DataFrame for JSON compatibility
     df = clean_dataframe_for_json(df)
     
-    # Convert to records
     records = df.to_dict('records')
-    
     if not records:
         raise HTTPException(status_code=400, detail="No data found in file")
     
-    # Prepare collection
     collection_name = f"{project_id}_data"
-    user_db = mongo_client[db_name]
-    collection = user_db[collection_name]
+    collection = mongo_client[db_name][collection_name]
     
-    # Clear existing data and insert new data
     collection.delete_many({})
     result = collection.insert_many(records)
     records_inserted = len(result.inserted_ids)
     
     logger.info(f"Uploaded {records_inserted} records to {collection_name}")
     
-    # Prepare sample data without ObjectId fields and ensure JSON compatibility
-    sample_data = []
-    if records:
-        for record in records[:5]:
-            # Create a copy without _id field
-            sample_record = {k: v for k, v in record.items() if k != '_id'}
-            sample_data.append(sample_record)
+    sample_data = [
+        {k: v for k, v in record.items() if k != '_id'} 
+        for record in records[:5]
+    ]
     
     return {
         "status": "success",
@@ -820,23 +405,10 @@ def get_project_upload_status(
     project_id: str,
     user_id: str
 ) -> Dict[str, Any]:
-    """
-    Check if project has data uploaded
-    
-    Args:
-        mongo_client: MongoDB client
-        project_id: Project identifier
-        user_id: User identifier
-    
-    Returns:
-        Upload status information including record count and last upload time
-    """
+    """Check if project has data uploaded"""
     logger.info(f"Checking upload status for project: {project_id}, user: {user_id}")
     
-    # Validate project access
     client_config, db_name = validate_project_access(mongo_client, user_id, project_id)
-    
-    # Check collection
     collection_name = f"{project_id}_data"
     user_db = mongo_client[db_name]
     
@@ -851,16 +423,15 @@ def get_project_upload_status(
     collection = user_db[collection_name]
     count = collection.count_documents({})
     
-    # Get last document's upload time if available
     last_uploaded = None
-    last_doc = collection.find_one(sort=[("_id", -1)])
-    if last_doc and "_id" in last_doc:
-        try:
-            last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
-        except Exception as e:
-            logger.warning(f"Could not extract timestamp from ObjectId: {str(e)}")
+    if count > 0:
+        last_doc = collection.find_one(sort=[("_id", -1)])
+        if last_doc and "_id" in last_doc:
+            try:
+                last_uploaded = last_doc["_id"].generation_time.isoformat() + "Z"
+            except Exception as e:
+                logger.warning(f"Could not extract timestamp: {str(e)}")
     
-    # Get columns from first document if data exists
     columns = []
     if count > 0:
         first_doc = collection.find_one()
@@ -876,337 +447,113 @@ def get_project_upload_status(
         "columns": columns
     }
 
-class JSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder to handle ObjectId"""
-    def default(self, obj):
-        if isinstance(obj, ObjectId):
-            return str(obj)
-        elif isinstance(obj, datetime):
-            return obj.isoformat() + "Z"
-        return super().default(obj)
+
+def convert_chart_objectids(chart: Dict) -> None:
+    """Convert ObjectIds in chart to strings in place"""
+    chart['_id'] = str(chart['_id'])
+    chart['chart_id'] = str(chart['chart_id'])
+    
+    if 'data' in chart and isinstance(chart['data'], list):
+        for item in chart['data']:
+            if isinstance(item, dict) and '_id' in item and isinstance(item['_id'], ObjectId):
+                item['_id'] = str(item['_id'])
+
+
+def get_project_charts_collection(mongo_client, user_id: str, project_id: str):
+    """Get charts collection for a project with validation"""
+    client_config = mongo_client["master"]["client_config"].find_one({"user_id": user_id})
+    
+    if not client_config or "projects" not in client_config:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
+    
+    project_exists = any(
+        p.get("project_id") == project_id 
+        for p in client_config.get("projects", [])
+    )
+    
+    if not project_exists:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    
+    collection_name = f"{project_id}_cleaned_data"
+    project_db = mongo_client[user_id]
+    
+    if collection_name not in project_db.list_collection_names():
+        raise HTTPException(status_code=404, detail=f"No charts found for project {project_id}")
+    
+    return project_db[collection_name]
+
 
 def get_project_charts(user_id: str, project_id: str) -> List[Dict[str, Any]]:
-    """
-    Get all charts for a specific project
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
-        
-    Returns:
-        List of chart dictionaries
-        
-    Raises:
-        HTTPException: If database error occurs or project not found
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # First, verify the user has access to this project
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            logger.info(f"No projects found for user_id: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
-        
-        # Check if the project exists in user's projects
-        user_projects = client_config.get("projects", [])
-        project_exists = any(
-            p.get("project_id") == project_id 
-            for p in user_projects
-        )
-        
-        if not project_exists:
-            logger.info(f"Project {project_id} not found for user {user_id}")
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        
-        # Construct collection name for project data
-        collection_name = f"{project_id}_cleaned_data"
-        
-        # Access the project database (using user_id as db name)
-        project_db = mongo_client[user_id]
-        
-        # Check if collection exists
-        if collection_name not in project_db.list_collection_names():
-            logger.info(f"No data found for project {project_id} in database {user_id}")
-            raise HTTPException(status_code=404, detail=f"No charts found for project {project_id}")
-        
-        # Get charts from collection
-        charts_collection = project_db[collection_name]
-        
-        # Get all charts, sorted by chart_id or creation order
+    """Get all charts for a specific project"""
+    with get_mongo_connection() as mongo_client:
+        charts_collection = get_project_charts_collection(mongo_client, user_id, project_id)
         charts = list(charts_collection.find({}).sort("chart_id", 1))
         
-        # Convert ObjectId to string for JSON serialization
         for chart in charts:
-            chart['_id'] = str(chart['_id'])
-            chart['chart_id'] = str(chart['chart_id'])
-            
-            # Convert any nested ObjectIds
-            if 'data' in chart and isinstance(chart['data'], list):
-                for item in chart['data']:
-                    if isinstance(item, dict) and '_id' in item:
-                        if isinstance(item['_id'], ObjectId):
-                            item['_id'] = str(item['_id'])
+            convert_chart_objectids(chart)
         
-        logger.info(f"Retrieved {len(charts)} charts for project {project_id}, user {user_id}")
+        logger.info(f"Retrieved {len(charts)} charts for project {project_id}")
         return charts
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving project charts: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve project charts: {str(e)}")
+
 
 def get_specific_chart(user_id: str, project_id: str, chart_id: str) -> Dict[str, Any]:
-    """
-    Get a specific chart by chart_id
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
-        chart_id: The chart's unique identifier
+    """Get a specific chart by chart_id"""
+    with get_mongo_connection() as mongo_client:
+        charts_collection = get_project_charts_collection(mongo_client, user_id, project_id)
         
-    Returns:
-        Chart dictionary
-        
-    Raises:
-        HTTPException: If database error occurs or chart not found
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # First, verify the user has access to this project
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            logger.info(f"No projects found for user_id: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
-        
-        # Check if the project exists in user's projects
-        user_projects = client_config.get("projects", [])
-        project_exists = any(
-            p.get("project_id") == project_id 
-            for p in user_projects
-        )
-        
-        if not project_exists:
-            logger.info(f"Project {project_id} not found for user {user_id}")
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        
-        # Construct collection name for project data
-        collection_name = f"{project_id}_cleaned_data"
-        
-        # Access the project database (using user_id as db name)
-        project_db = mongo_client[user_id]
-        
-        # Check if collection exists
-        if collection_name not in project_db.list_collection_names():
-            logger.info(f"No data found for project {project_id} in database {user_id}")
-            raise HTTPException(status_code=404, detail=f"No charts found for project {project_id}")
-        
-        # Get specific chart
-        charts_collection = project_db[collection_name]
-        
-        # Convert chart_id string to ObjectId if it's a valid ObjectId
+        # Try ObjectId conversion first, fallback to string
         try:
-            chart_object_id = ObjectId(chart_id)
-            chart = charts_collection.find_one({"chart_id": chart_object_id})
+            chart = charts_collection.find_one({"chart_id": ObjectId(chart_id)})
         except:
-            # If chart_id is not a valid ObjectId, try searching as string
             chart = charts_collection.find_one({"chart_id": chart_id})
         
         if not chart:
-            logger.info(f"Chart {chart_id} not found in project {project_id}")
             raise HTTPException(status_code=404, detail=f"Chart {chart_id} not found")
         
-        # Convert ObjectId to string
-        chart['_id'] = str(chart['_id'])
-        chart['chart_id'] = str(chart['chart_id'])
-        
-        # Convert any nested ObjectIds
-        if 'data' in chart and isinstance(chart['data'], list):
-            for item in chart['data']:
-                if isinstance(item, dict) and '_id' in item:
-                    if isinstance(item['_id'], ObjectId):
-                        item['_id'] = str(item['_id'])
-        
-        logger.info(f"Retrieved chart {chart_id} for project {project_id}, user {user_id}")
+        convert_chart_objectids(chart)
+        logger.info(f"Retrieved chart {chart_id} for project {project_id}")
         return chart
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving specific chart: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve chart: {str(e)}")
+
 
 def get_chart_types(user_id: str, project_id: str) -> List[Dict[str, Any]]:
-    """
-    Get all chart types available in the project
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
-        
-    Returns:
-        List of chart type dictionaries with counts
-        
-    Raises:
-        HTTPException: If database error occurs
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # First, verify the user has access to this project
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            logger.info(f"No projects found for user_id: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
-        
-        # Check if the project exists in user's projects
-        user_projects = client_config.get("projects", [])
-        project_exists = any(
-            p.get("project_id") == project_id 
-            for p in user_projects
-        )
-        
-        if not project_exists:
-            logger.info(f"Project {project_id} not found for user {user_id}")
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        
-        # Construct collection name for project data
-        collection_name = f"{project_id}_cleaned_data"
-        
-        # Access the project database (using user_id as db name)
-        project_db = mongo_client[user_id]
-        
-        # Check if collection exists
-        if collection_name not in project_db.list_collection_names():
-            logger.info(f"No data found for project {project_id} in database {user_id}")
-            return []
-        
-        # Get distinct chart types
-        charts_collection = project_db[collection_name]
+    """Get all chart types available in the project"""
+    with get_mongo_connection() as mongo_client:
+        charts_collection = get_project_charts_collection(mongo_client, user_id, project_id)
         chart_types = charts_collection.distinct("chart_type")
         
-        # Get chart count by type
-        chart_counts = []
-        for chart_type in chart_types:
-            count = charts_collection.count_documents({"chart_type": chart_type})
-            chart_counts.append({
-                "type": chart_type,
-                "count": count
-            })
+        chart_counts = [
+            {"type": chart_type, "count": charts_collection.count_documents({"chart_type": chart_type})}
+            for chart_type in chart_types
+        ]
         
-        logger.info(f"Retrieved {len(chart_counts)} chart types for project {project_id}, user {user_id}")
+        logger.info(f"Retrieved {len(chart_counts)} chart types for project {project_id}")
         return chart_counts
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving chart types: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve chart types: {str(e)}")
+
 
 def get_direct_charts(user_id: str, project_id: str) -> List[Dict[str, Any]]:
-    """
-    Get only charts with display_mode = "direct" for dashboard display
-    
-    Args:
-        user_id: The user's unique identifier
-        project_id: The project's unique identifier
+    """Get only charts with display_mode = 'direct' for dashboard display"""
+    with get_mongo_connection() as mongo_client:
+        try:
+            charts_collection = get_project_charts_collection(mongo_client, user_id, project_id)
+        except HTTPException as e:
+            if "No charts found" in str(e.detail):
+                return []
+            raise
         
-    Returns:
-        List of chart dictionaries with display_mode = "direct"
-        
-    Raises:
-        HTTPException: If database error occurs
-    """
-    try:
-        # Connect to MongoDB
-        mongo_client = connect_to_mongodb()
-        if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
-        
-        # First, verify the user has access to this project
-        master_db = mongo_client["master"]
-        client_config_collection = master_db["client_config"]
-        
-        # Find user's client config
-        client_config = client_config_collection.find_one({"user_id": user_id})
-        
-        if not client_config or "projects" not in client_config:
-            logger.info(f"No projects found for user_id: {user_id}")
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
-        
-        # Check if the project exists in user's projects
-        user_projects = client_config.get("projects", [])
-        project_exists = any(
-            p.get("project_id") == project_id 
-            for p in user_projects
-        )
-        
-        if not project_exists:
-            logger.info(f"Project {project_id} not found for user {user_id}")
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-        
-        # Construct collection name for project data
-        collection_name = f"{project_id}_cleaned_data"
-        
-        # Access the project database (using user_id as db name)
-        project_db = mongo_client[user_id]
-        
-        # Check if collection exists
-        if collection_name not in project_db.list_collection_names():
-            logger.info(f"No data found for project {project_id} in database {user_id}")
-            return []
-        
-        # Get only charts with display_mode = "direct"
-        charts_collection = project_db[collection_name]
         charts = list(charts_collection.find({"display_mode": "direct"}).sort("chart_id", 1))
         
-        # Convert ObjectId to string for JSON serialization
         for chart in charts:
-            chart['_id'] = str(chart['_id'])
-            chart['chart_id'] = str(chart['chart_id'])
-            
-            # Convert any nested ObjectIds
-            if 'data' in chart and isinstance(chart['data'], list):
-                for item in chart['data']:
-                    if isinstance(item, dict) and '_id' in item:
-                        if isinstance(item['_id'], ObjectId):
-                            item['_id'] = str(item['_id'])
+            convert_chart_objectids(chart)
         
-        logger.info(f"Retrieved {len(charts)} direct charts for project {project_id}, user {user_id}")
+        logger.info(f"Retrieved {len(charts)} direct charts for project {project_id}")
         return charts
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error retrieving direct charts: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve direct charts: {str(e)}")
+
+
+class JSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle ObjectId and datetime"""
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat() + "Z"
+        return super().default(obj)

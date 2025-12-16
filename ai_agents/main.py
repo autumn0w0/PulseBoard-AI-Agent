@@ -1,13 +1,12 @@
 import re
-import io
 import sys
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
-import pandas as pd
 from bson import ObjectId
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel, EmailStr, field_validator
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, field_validator, Field
 
 sys.path.append("..")
 
@@ -39,11 +38,28 @@ from ai_agents.api.dashboard_apis import (
     get_project_charts,
     get_specific_chart,
     get_chart_types,
-    get_direct_charts
+    get_direct_charts,
+    serialize_mongo_doc
 )
 
+# Initialize
 logger = get_logger(__name__)
-app = FastAPI(title="PulseBoard.ai API", version="1.0.0")
+app = FastAPI(
+    title="PulseBoard.ai API",
+    version="2.0.0",
+    description="Advanced Dashboard and Analytics API",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ============================================================================
@@ -51,10 +67,11 @@ app = FastAPI(title="PulseBoard.ai API", version="1.0.0")
 # ============================================================================
 
 class UserCreateRequest(BaseModel):
+    """User registration request model with validation"""
     email: EmailStr
-    first_name: str
-    last_name: str
-    password: str
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    password: str = Field(..., min_length=8)
     
     @field_validator('password')
     @classmethod
@@ -73,87 +90,135 @@ class UserCreateRequest(BaseModel):
     @field_validator('first_name', 'last_name')
     @classmethod
     def validate_name(cls, v: str) -> str:
-        """Validate names are not empty"""
+        """Validate names are not empty and trimmed"""
         if not v or not v.strip():
             raise ValueError('Name cannot be empty')
         return v.strip()
 
 
 class UserLoginRequest(BaseModel):
+    """User login request model"""
     email: EmailStr
     password: str
 
 
 class ProjectCreateRequest(BaseModel):
-    user_id: str
-    project_name: str
-    domain: str
+    """Project creation request model"""
+    user_id: str = Field(..., pattern=r'^UID\d+$')
+    project_name: str = Field(..., min_length=1, max_length=100)
+    domain: str = Field(..., min_length=1, max_length=50)
 
 
 class ProjectUpdateRequest(BaseModel):
-    project_id: str
+    """Project update request model"""
+    project_id: str = Field(..., pattern=r'^UID\d+PJ\d+$')
 
 
 class ProjectDeleteRequest(BaseModel):
-    project_id: str
-    user_id: str
+    """Project deletion request model"""
+    project_id: str = Field(..., pattern=r'^UID\d+PJ\d+$')
+    user_id: str = Field(..., pattern=r'^UID\d+$')
 
 
 class MiddlewareQueryRequest(BaseModel):
-    project_id: str
-    query: str
+    """Middleware query request model"""
+    project_id: str = Field(..., pattern=r'^UID\d+PJ\d+$')
+    query: str = Field(..., min_length=1, max_length=1000)
     master_db_name: str = "master"
+
+
+class StandardResponse(BaseModel):
+    """Standard API response model"""
+    status: str
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
 
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
-def convert_objectid_to_str(data: Any) -> Any:
-    """Recursively convert all ObjectId instances to strings in nested data structures"""
+def sanitize_response(data: Any) -> Any:
+    """
+    Recursively sanitize response data:
+    - Convert ObjectId to string
+    - Remove password fields
+    - Handle nested structures
+    """
     if isinstance(data, dict):
-        return {key: convert_objectid_to_str(value) for key, value in data.items()}
+        sanitized = {}
+        for key, value in data.items():
+            if key == "password":
+                continue
+            if isinstance(value, ObjectId):
+                sanitized[key] = str(value)
+            elif key == "_id" and isinstance(value, ObjectId):
+                sanitized[key] = str(value)
+            else:
+                sanitized[key] = sanitize_response(value)
+        return sanitized
     elif isinstance(data, list):
-        return [convert_objectid_to_str(item) for item in data]
+        return [sanitize_response(item) for item in data]
     elif isinstance(data, ObjectId):
         return str(data)
     return data
 
 
-def sanitize_user_response(user_dict: dict) -> dict:
-    """Remove sensitive data and convert ObjectIds"""
-    if "_id" in user_dict:
-        user_dict["_id"] = str(user_dict["_id"])
-    user_dict.pop("password", None)
-    return user_dict
+def create_success_response(
+    message: str = "Success",
+    data: Optional[Dict[str, Any]] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """Create standardized success response"""
+    response = {
+        "status": "success",
+        "message": message
+    }
+    if data:
+        response["data"] = sanitize_response(data)
+    response.update(sanitize_response(kwargs))
+    return response
 
 
-class FileWrapper:
-    """Wrapper for file upload compatibility"""
-    def __init__(self, content: bytes, filename: str):
-        self.file = content
-        self.filename = filename
+def create_error_response(
+    message: str,
+    status_code: int = 500
+) -> HTTPException:
+    """Create standardized error response"""
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "status": "error",
+            "message": message
+        }
+    )
+
+
+def extract_user_id_from_project_id(project_id: str) -> str:
+    """Extract user_id from project_id (format: UID002PJ001)"""
+    if 'PJ' not in project_id:
+        raise ValueError("Invalid project_id format")
+    return project_id.split('PJ')[0]
 
 
 # ============================================================================
 # User Management Endpoints
 # ============================================================================
 
-@app.post("/create-user", tags=["User Management"])
+@app.post("/api/v1/users/register", tags=["User Management"])
 async def create_user(user_data: UserCreateRequest):
     """
-    Create a new user account
+    Register a new user account
     
-    Returns:
-        User details and client configuration
+    - **email**: Valid email address
+    - **first_name**: User's first name (1-50 characters)
+    - **last_name**: User's last name (1-50 characters)
+    - **password**: Strong password (min 8 chars, uppercase, lowercase, digit)
     
-    Raises:
-        409: User already exists
-        400: Validation error
-        500: Server error
+    Returns user details and initial configuration
     """
     try:
-        logger.info(f"Creating user with email: {user_data.email}")
+        logger.info(f"User registration attempt: {user_data.email}")
         
         result = run_user_creation(
             email=user_data.email,
@@ -163,42 +228,40 @@ async def create_user(user_data: UserCreateRequest):
         )
         
         if result["status"] == "user_already_exists":
-            logger.warning(f"User already exists: {user_data.email}")
-            raise HTTPException(status_code=409, detail="User already exists")
+            raise create_error_response(
+                "User with this email already exists",
+                409
+            )
         
-        # Sanitize response
-        if result.get("user"):
-            result["user"] = sanitize_user_response(result["user"])
-        if result.get("client_config") and "_id" in result["client_config"]:
-            result["client_config"]["_id"] = str(result["client_config"]["_id"])
-        
-        logger.info(f"User created successfully: {result['user']['user_id']}")
-        return result
+        logger.info(f"User registered successfully: {result['user']['user_id']}")
+        return create_success_response(
+            message="User registered successfully",
+            user=result["user"],
+            client_config=result.get("client_config")
+        )
         
     except HTTPException:
         raise
     except ValueError as e:
         logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise create_error_response(str(e), 400)
     except Exception as e:
-        logger.error(f"Error creating user: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Registration error: {str(e)}")
+        raise create_error_response(f"Registration failed: {str(e)}", 500)
 
 
-@app.post("/user-login", tags=["User Management"])
+@app.post("/api/v1/users/login", tags=["User Management"])
 async def login_user(login_data: UserLoginRequest):
     """
     Authenticate user and return user information
     
-    Returns:
-        User details on successful authentication
+    - **email**: User's registered email
+    - **password**: User's password
     
-    Raises:
-        401: Invalid credentials
-        500: Server error
+    Returns user details on successful authentication
     """
     try:
-        logger.info(f"Login request for email: {login_data.email}")
+        logger.info(f"Login attempt: {login_data.email}")
         
         result = run_user_login(
             email=login_data.email,
@@ -206,38 +269,63 @@ async def login_user(login_data: UserLoginRequest):
         )
         
         if result["status"] == "failed":
-            logger.warning(f"Login failed: {result['message']}")
-            raise HTTPException(status_code=401, detail=result["message"])
-        
-        # Sanitize response
-        if result.get("user"):
-            result["user"] = sanitize_user_response(result["user"])
+            raise create_error_response(
+                result.get("message", "Invalid credentials"),
+                401
+            )
         
         logger.info(f"Login successful: {result['user']['user_id']}")
-        return result
+        return create_success_response(
+            message="Login successful",
+            user=result["user"]
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in login endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Login error: {str(e)}")
+        raise create_error_response(f"Login failed: {str(e)}", 500)
+
+
+@app.get("/api/v1/users/{user_id}", tags=["User Management"])
+async def get_user_details_endpoint(user_id: str):
+    """
+    Get user details
+    
+    - **user_id**: User identifier (format: UID001)
+    
+    Returns complete user profile information
+    """
+    try:
+        logger.info(f"Fetching user details: {user_id}")
+        user = get_user_details(user_id)
+        
+        return create_success_response(
+            message="User details retrieved",
+            user=user
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching user: {str(e)}")
+        raise create_error_response(f"Failed to get user details: {str(e)}", 500)
 
 
 # ============================================================================
 # Project Management Endpoints
 # ============================================================================
 
-@app.post("/create-project", tags=["Project Management"])
+@app.post("/api/v1/projects", tags=["Project Management"])
 async def create_project(project_data: ProjectCreateRequest):
     """
     Create a new project for a user
     
-    Returns:
-        Project details and updated client configuration
+    - **user_id**: User identifier (format: UID001)
+    - **project_name**: Project name (1-100 characters)
+    - **domain**: Project domain/category
     
-    Raises:
-        404: User not found
-        500: Failed to create project
+    Returns project details and updated configuration
     """
     try:
         logger.info(f"Creating project for user: {project_data.user_id}")
@@ -249,273 +337,165 @@ async def create_project(project_data: ProjectCreateRequest):
         )
         
         if result["status"] == "user_not_found":
-            logger.warning(f"User not found: {project_data.user_id}")
-            raise HTTPException(status_code=404, detail="User not found")
+            raise create_error_response("User not found", 404)
         
         if result["status"] == "failed":
-            logger.error("Failed to create project")
-            raise HTTPException(status_code=500, detail="Failed to create project")
+            raise create_error_response("Failed to create project", 500)
         
-        # Convert ObjectId
-        if result.get("client_config") and "_id" in result["client_config"]:
-            result["client_config"]["_id"] = str(result["client_config"]["_id"])
-        
-        logger.info(f"Project created successfully: {result['project']['project_id']}")
-        return result
+        logger.info(f"Project created: {result['project']['project_id']}")
+        return create_success_response(
+            message="Project created successfully",
+            project=result["project"],
+            collections_created=result.get("collections_created")
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error creating project: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Project creation error: {str(e)}")
+        raise create_error_response(f"Failed to create project: {str(e)}", 500)
 
 
-@app.delete("/delete-project", tags=["Project Management"])
-async def delete_project_endpoint(request: ProjectDeleteRequest):
+@app.get("/api/v1/projects/user/{user_id}", tags=["Project Management"])
+async def get_all_projects_endpoint(user_id: str):
     """
-    Delete a project and all its associated data
+    Get all projects for a user, sorted by most recent
     
-    Returns:
-        Details of deleted resources
+    - **user_id**: User identifier
     
-    Raises:
-        404: Project not found
-        500: Failed to delete project
+    Returns list of all user's projects
     """
     try:
-        logger.info(f"Deleting project: user_id={request.user_id}, project_id={request.project_id}")
+        logger.info(f"Fetching all projects for user: {user_id}")
+        projects = get_all_projects(user_id)
         
-        deleted_data = delete_project(request.user_id, request.project_id)
+        return create_success_response(
+            message=f"Retrieved {len(projects)} projects",
+            total_projects=len(projects),
+            projects=projects
+        )
         
-        logger.info(f"Project deleted successfully: {request.project_id}")
-        return {
-            "status": "success",
-            "message": "Project deleted successfully",
-            "deleted_project": deleted_data
-        }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in delete_project endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+        logger.error(f"Error fetching projects: {str(e)}")
+        raise create_error_response(f"Failed to get projects: {str(e)}", 500)
 
 
-@app.put("/update-project-last-used", tags=["Project Management"])
-async def update_project_last_used_endpoint(request: ProjectUpdateRequest):
-    """
-    Update the last_used_at timestamp for a project
-    
-    Returns:
-        Updated project details
-    
-    Raises:
-        400: Invalid project_id format
-        404: Project not found
-        500: Failed to update project
-    """
-    try:
-        logger.info(f"Updating last_used_at for project: {request.project_id}")
-        
-        # Extract user_id from project_id (format: UID002PJ001)
-        user_id = request.project_id.split('PJ')[0]
-        
-        if not user_id.startswith('UID'):
-            raise HTTPException(status_code=400, detail="Invalid project_id format")
-        
-        updated_project = update_project_last_used(user_id, request.project_id)
-        
-        logger.info(f"Project last_used_at updated successfully: {request.project_id}")
-        return {
-            "status": "success",
-            "message": "Project last_used_at updated successfully",
-            "project": updated_project
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in update_project_last_used endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to update project: {str(e)}")
-
-
-# ============================================================================
-# Dashboard Endpoints
-# ============================================================================
-
-@app.get("/user-details/{user_id}", tags=["Dashboard"])
-async def get_user_details_endpoint(user_id: str):
-    """Get user details for the dashboard"""
-    try:
-        logger.info(f"Getting user details for user_id: {user_id}")
-        result = get_user_details(user_id)
-        logger.info(f"User details retrieved successfully for user_id: {user_id}")
-        
-        return {
-            "status": "success",
-            "user": result
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in get_user_details endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get user details: {str(e)}")
-
-
-@app.get("/recent-projects/{user_id}", tags=["Dashboard"])
-async def get_recent_projects_endpoint(user_id: str, limit: int = 3):
+@app.get("/api/v1/projects/user/{user_id}/recent", tags=["Project Management"])
+async def get_recent_projects_endpoint(
+    user_id: str,
+    limit: int = Query(default=3, ge=1, le=50)
+):
     """
     Get recent projects for a user
     
-    Args:
-        user_id: User identifier
-        limit: Maximum number of projects to return (1-50, default: 3)
+    - **user_id**: User identifier
+    - **limit**: Number of projects to return (1-50, default: 3)
+    
+    Returns most recently used projects
     """
     try:
-        logger.info(f"Getting recent projects for user_id: {user_id}, limit: {limit}")
-        
-        if limit < 1 or limit > 50:
-            raise HTTPException(status_code=400, detail="Limit must be between 1 and 50")
-        
+        logger.info(f"Fetching recent projects: user={user_id}, limit={limit}")
         projects = get_recent_projects(user_id, limit)
         
-        logger.info(f"Retrieved {len(projects)} recent projects for user_id: {user_id}")
-        return {
-            "status": "success",
-            "total_projects": len(projects),
-            "projects": projects
-        }
+        return create_success_response(
+            message=f"Retrieved {len(projects)} recent projects",
+            total_projects=len(projects),
+            projects=projects
+        )
         
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in get_recent_projects endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get recent projects: {str(e)}")
+        logger.error(f"Error fetching recent projects: {str(e)}")
+        raise create_error_response(f"Failed to get recent projects: {str(e)}", 500)
 
 
-@app.get("/all-projects/{user_id}", tags=["Dashboard"])
-async def get_all_projects_endpoint(user_id: str):
-    """Get all projects for a user, sorted by most recent"""
-    try:
-        logger.info(f"Getting all projects for user_id: {user_id}")
-        projects = get_all_projects(user_id)
-        
-        logger.info(f"Retrieved {len(projects)} projects for user_id: {user_id}")
-        return {
-            "status": "success",
-            "total_projects": len(projects),
-            "projects": projects
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in get_all_projects endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get projects: {str(e)}")
-
-
-@app.get("/project-count/{user_id}", tags=["Dashboard"])
+@app.get("/api/v1/projects/user/{user_id}/count", tags=["Project Management"])
 async def get_project_count_endpoint(user_id: str):
-    """Get the total number of projects for a user"""
+    """
+    Get total project count for a user
+    
+    - **user_id**: User identifier
+    
+    Returns total number of projects
+    """
     try:
-        logger.info(f"Getting project count for user_id: {user_id}")
+        logger.info(f"Fetching project count: {user_id}")
         result = get_user_projects_count(user_id)
         
-        logger.info(f"Project count retrieved for user_id: {user_id}")
-        return {
-            "status": "success",
-            "total_projects": result["total_projects"]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in get_project_count endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get project count: {str(e)}")
-
-
-# ============================================================================
-# Data Processing Endpoints
-# ============================================================================
-
-@app.post("/data-process-pipeline/{project_id}", tags=["Data Processing"])
-async def process_project_pipeline(project_id: str) -> Dict[str, Any]:
-    """
-    Run the complete data processing pipeline for a project
-    
-    Args:
-        project_id: The unique identifier for the project
-        
-    Returns:
-        JSON response containing results from all pipeline steps
-    """
-    logger.info(f"Starting project data pipeline for project {project_id}")
-    
-    try:
-        results = run_pdp(project_id)
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "message": "Project data pipeline completed successfully",
-            "results": results
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in project data pipeline: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Unexpected error in project data pipeline: {str(e)}"
-        )
-
-@app.post("/agent-query", tags=["Data Processing"])
-async def query_middleware(request: MiddlewareQueryRequest):
-    """
-    Process user query through the middleware node.
-    
-    The middleware will classify the intent and route to appropriate pipeline:
-    - Data Analysis (Analyst Node)
-    - Chart Insights (RAG Charts Node)
-    - Data Schema (RAG Data Node)
-    - General queries
-    
-    Returns:
-        AI-generated response based on the query type
-    """
-    try:
-        logger.info(f"Processing middleware query for project: {request.project_id}")
-        logger.info(f"Query: {request.query}")
-        
-        if not request.project_id or not request.query:
-            raise HTTPException(
-                status_code=400, 
-                detail="Both project_id and query are required"
-            )
-        
-        response = run_middleware(
-            project_id=request.project_id,
-            query=request.query,
-            master_db_name=request.master_db_name
+        return create_success_response(
+            message="Project count retrieved",
+            total_projects=result["total_projects"]
         )
         
-        logger.info(f"Middleware query completed for project {request.project_id}")
-        return {"response": response}
+    except Exception as e:
+        logger.error(f"Error fetching project count: {str(e)}")
+        raise create_error_response(f"Failed to get project count: {str(e)}", 500)
+
+
+@app.put("/api/v1/projects/{project_id}/last-used", tags=["Project Management"])
+async def update_project_last_used_endpoint(project_id: str):
+    """
+    Update project's last_used_at timestamp
+    
+    - **project_id**: Project identifier (format: UID001PJ001)
+    
+    Updates timestamp when user accesses the project
+    """
+    try:
+        logger.info(f"Updating last_used_at: {project_id}")
         
-    except HTTPException:
-        raise
+        user_id = extract_user_id_from_project_id(project_id)
+        updated_project = update_project_last_used(user_id, project_id)
+        
+        return create_success_response(
+            message="Project timestamp updated",
+            project=updated_project
+        )
+        
     except ValueError as e:
-        logger.error(f"Validation error in middleware query: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except ConnectionError as e:
-        logger.error(f"Connection error in middleware query: {str(e)}")
-        raise HTTPException(status_code=503, detail=f"Database connection failed: {str(e)}")
+        raise create_error_response(str(e), 400)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in middleware query: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error updating timestamp: {str(e)}")
+        raise create_error_response(f"Failed to update project: {str(e)}", 500)
 
 
-@app.post("/upload-data/{project_id}", tags=["Data Upload"])
+@app.delete("/api/v1/projects/{project_id}", tags=["Project Management"])
+async def delete_project_endpoint(
+    project_id: str,
+    user_id: str = Query(...)
+):
+    """
+    Delete a project and all associated data
+    
+    - **project_id**: Project identifier
+    - **user_id**: User identifier (query parameter)
+    
+    Removes project and all MongoDB/Weaviate collections
+    """
+    try:
+        logger.info(f"Deleting project: {project_id} (user: {user_id})")
+        
+        deleted_data = delete_project(user_id, project_id)
+        
+        logger.info(f"Project deleted: {project_id}")
+        return create_success_response(
+            message="Project deleted successfully",
+            deleted_project=deleted_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise create_error_response(f"Failed to delete project: {str(e)}", 500)
+
+
+# ============================================================================
+# Data Upload & Processing Endpoints
+# ============================================================================
+
+@app.post("/api/v1/projects/{project_id}/upload", tags=["Data Management"])
 async def upload_data(
     project_id: str,
     file: UploadFile = File(...),
@@ -525,28 +505,23 @@ async def upload_data(
     """
     Upload data file to a project
     
-    Args:
-        project_id: Project identifier
-        file: Data file (CSV, Excel, or JSON)
-        user_id: User identifier
-        file_type: File type (csv, excel, json, or auto for auto-detection)
+    - **project_id**: Project identifier
+    - **file**: Data file (CSV, Excel, or JSON)
+    - **user_id**: User identifier
+    - **file_type**: File type (csv, excel, json, or auto)
     
-    Returns:
-        Upload status and basic data statistics
+    Returns upload status and data statistics
     """
     mongo_client = None
     try:
-        logger.info(f"Uploading data for project: {project_id}, user: {user_id}")
+        logger.info(f"Data upload: project={project_id}, file={file.filename}")
         
         mongo_client = connect_to_mongodb()
         if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
+            raise create_error_response("Database connection failed", 500)
         
-        # Read file contents
         contents = await file.read()
         
-        # Call the helper function with bytes and filename
         result = upload_data_to_project(
             mongo_client=mongo_client,
             project_id=project_id,
@@ -556,41 +531,39 @@ async def upload_data(
             file_type=file_type
         )
         
-        logger.info(f"Data uploaded successfully for project: {project_id}")
+        logger.info(f"Upload successful: {result['records_inserted']} records")
         return result
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload data: {str(e)}")
+        logger.error(f"Upload error: {str(e)}")
+        raise create_error_response(f"Upload failed: {str(e)}", 500)
     finally:
         if mongo_client:
             mongo_client.close()
 
-@app.get("/upload-status/{project_id}", tags=["Data Upload"])
+
+@app.get("/api/v1/projects/{project_id}/upload-status", tags=["Data Management"])
 async def get_upload_status(
     project_id: str,
-    user_id: str
+    user_id: str = Query(...)
 ):
     """
-    Check if project has data uploaded
+    Check project data upload status
     
-    Args:
-        project_id: Project identifier
-        user_id: User identifier
+    - **project_id**: Project identifier
+    - **user_id**: User identifier
     
-    Returns:
-        Upload status information
+    Returns information about uploaded data
     """
     mongo_client = None
     try:
-        logger.info(f"Checking upload status for project: {project_id}, user: {user_id}")
+        logger.info(f"Checking upload status: project={project_id}")
         
         mongo_client = connect_to_mongodb()
         if not mongo_client:
-            logger.error("Failed to connect to MongoDB")
-            raise HTTPException(status_code=500, detail="Database connection failed")
+            raise create_error_response("Database connection failed", 500)
         
         result = get_project_upload_status(
             mongo_client=mongo_client,
@@ -604,197 +577,319 @@ async def get_upload_status(
         raise
     except Exception as e:
         logger.error(f"Error checking upload status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to check upload status: {str(e)}")
+        raise create_error_response(f"Status check failed: {str(e)}", 500)
     finally:
         if mongo_client:
             mongo_client.close()
 
-# ============================================================================
-# Health Check
-# ============================================================================
 
-@app.get("/health-check", tags=["System"])
-async def health_check():
-    """Health check endpoint for monitoring"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
-        "service": "PulseBoard.ai API"
-    }
-
-@app.get("/dashboard/{project_id}/charts", tags=["Dashboard"])
-async def get_project_charts_endpoint(project_id: str, user_id: str):
+@app.post("/api/v1/projects/{project_id}/process", tags=["Data Management"])
+async def process_project_pipeline(project_id: str):
     """
-    Get all charts for a specific project
+    Run complete data processing pipeline
     
-    Args:
-        project_id: Project identifier
-        user_id: User identifier (query parameter)
+    - **project_id**: Project identifier
+    
+    Executes all pipeline steps:
+    1. Data type finding
+    2. Data anomaly detection
+    3. Chart suggestion
+    4. Chart pipeline
+    5. Data flattening for Weaviate
+    6. Vectorization
+    7. Data to Weaviate
+    
+    Returns results from all pipeline steps
     """
     try:
-        logger.info(f"Getting charts for project_id: {project_id}, user_id: {user_id}")
+        logger.info(f"Starting pipeline: {project_id}")
         
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        results = run_pdp(project_id)
+        
+        logger.info(f"Pipeline completed: {project_id}")
+        return create_success_response(
+            message="Data processing completed",
+            project_id=project_id,
+            results=results
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Pipeline error: {str(e)}")
+        raise create_error_response(f"Processing failed: {str(e)}", 500)
+
+
+# ============================================================================
+# AI Agent Endpoints
+# ============================================================================
+
+@app.post("/api/v1/agent/query", tags=["AI Agent"])
+async def query_middleware(request: MiddlewareQueryRequest):
+    """
+    Process user query through AI middleware
+    
+    - **project_id**: Project identifier
+    - **query**: User's natural language query (1-1000 characters)
+    - **master_db_name**: Database name (default: "master")
+    
+    The middleware classifies intent and routes to:
+    - Data Analysis (Analyst Node)
+    - Chart Insights (RAG Charts Node)
+    - Data Schema (RAG Data Node)
+    - General queries
+    
+    Returns AI-generated response based on query type
+    """
+    try:
+        logger.info(f"AI query: project={request.project_id}")
+        logger.debug(f"Query: {request.query}")
+        
+        response = run_middleware(
+            project_id=request.project_id,
+            query=request.query,
+            master_db_name=request.master_db_name
+        )
+        
+        logger.info(f"AI query completed: {request.project_id}")
+        return create_success_response(
+            message="Query processed",
+            response=response
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise create_error_response(str(e), 400)
+    except ConnectionError as e:
+        logger.error(f"Connection error: {str(e)}")
+        raise create_error_response(f"Database connection failed: {str(e)}", 503)
+    except Exception as e:
+        logger.error(f"AI query error: {str(e)}")
+        raise create_error_response(f"Query processing failed: {str(e)}", 500)
+
+
+# ============================================================================
+# Dashboard & Charts Endpoints
+# ============================================================================
+
+@app.get("/api/v1/dashboard/{project_id}/charts", tags=["Dashboard"])
+async def get_project_charts_endpoint(
+    project_id: str,
+    user_id: str = Query(...)
+):
+    """
+    Get all charts for a project
+    
+    - **project_id**: Project identifier
+    - **user_id**: User identifier
+    
+    Returns all available charts
+    """
+    try:
+        logger.info(f"Fetching charts: project={project_id}, user={user_id}")
         
         charts = get_project_charts(user_id, project_id)
         
-        logger.info(f"Retrieved {len(charts)} charts for project {project_id}")
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "total_charts": len(charts),
-            "charts": charts
-        }
+        return create_success_response(
+            message=f"Retrieved {len(charts)} charts",
+            project_id=project_id,
+            total_charts=len(charts),
+            charts=charts
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_project_charts endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get project charts: {str(e)}")
+        logger.error(f"Error fetching charts: {str(e)}")
+        raise create_error_response(f"Failed to get charts: {str(e)}", 500)
 
-@app.get("/dashboard/{project_id}/chart/{chart_id}", tags=["Dashboard"])
-async def get_specific_chart_endpoint(project_id: str, chart_id: str, user_id: str):
+
+@app.get("/api/v1/dashboard/{project_id}/charts/{chart_id}", tags=["Dashboard"])
+async def get_specific_chart_endpoint(
+    project_id: str,
+    chart_id: str,
+    user_id: str = Query(...)
+):
     """
-    Get a specific chart by chart_id
+    Get a specific chart by ID
     
-    Args:
-        project_id: Project identifier
-        chart_id: Chart identifier
-        user_id: User identifier (query parameter)
+    - **project_id**: Project identifier
+    - **chart_id**: Chart identifier
+    - **user_id**: User identifier
+    
+    Returns chart details and data
     """
     try:
-        logger.info(f"Getting chart {chart_id} for project_id: {project_id}, user_id: {user_id}")
-        
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        logger.info(f"Fetching chart: {chart_id} (project={project_id})")
         
         chart = get_specific_chart(user_id, project_id, chart_id)
         
-        logger.info(f"Retrieved chart {chart_id} for project {project_id}")
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "chart_id": chart_id,
-            "chart": chart
-        }
+        return create_success_response(
+            message="Chart retrieved",
+            project_id=project_id,
+            chart_id=chart_id,
+            chart=chart
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_specific_chart endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get chart: {str(e)}")
+        logger.error(f"Error fetching chart: {str(e)}")
+        raise create_error_response(f"Failed to get chart: {str(e)}", 500)
 
-@app.get("/dashboard/{project_id}/chart-types", tags=["Dashboard"])
-async def get_chart_types_endpoint(project_id: str, user_id: str):
+
+@app.get("/api/v1/dashboard/{project_id}/chart-types", tags=["Dashboard"])
+async def get_chart_types_endpoint(
+    project_id: str,
+    user_id: str = Query(...)
+):
     """
-    Get all chart types available in the project
+    Get all chart types in project
     
-    Args:
-        project_id: Project identifier
-        user_id: User identifier (query parameter)
+    - **project_id**: Project identifier
+    - **user_id**: User identifier
+    
+    Returns available chart types and counts
     """
     try:
-        logger.info(f"Getting chart types for project_id: {project_id}, user_id: {user_id}")
-        
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        logger.info(f"Fetching chart types: project={project_id}")
         
         chart_types = get_chart_types(user_id, project_id)
         
-        logger.info(f"Retrieved {len(chart_types)} chart types for project {project_id}")
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "total_types": len(chart_types),
-            "chart_types": chart_types
-        }
+        return create_success_response(
+            message=f"Retrieved {len(chart_types)} chart types",
+            project_id=project_id,
+            total_types=len(chart_types),
+            chart_types=chart_types
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_chart_types endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get chart types: {str(e)}")
+        logger.error(f"Error fetching chart types: {str(e)}")
+        raise create_error_response(f"Failed to get chart types: {str(e)}", 500)
 
-@app.get("/dashboard/{project_id}/direct-charts", tags=["Dashboard"])
-async def get_direct_charts_endpoint(project_id: str, user_id: str):
+
+@app.get("/api/v1/dashboard/{project_id}/direct-charts", tags=["Dashboard"])
+async def get_direct_charts_endpoint(
+    project_id: str,
+    user_id: str = Query(...)
+):
     """
-    Get only charts with display_mode = "direct" for dashboard display
+    Get charts with display_mode='direct' for dashboard
     
-    Args:
-        project_id: Project identifier
-        user_id: User identifier (query parameter)
+    - **project_id**: Project identifier
+    - **user_id**: User identifier
+    
+    Returns charts optimized for dashboard display
     """
     try:
-        logger.info(f"Getting direct charts for project_id: {project_id}, user_id: {user_id}")
-        
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
+        logger.info(f"Fetching direct charts: project={project_id}")
         
         charts = get_direct_charts(user_id, project_id)
         
-        logger.info(f"Retrieved {len(charts)} direct charts for project {project_id}")
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "total_direct_charts": len(charts),
-            "charts": charts
-        }
+        return create_success_response(
+            message=f"Retrieved {len(charts)} direct charts",
+            project_id=project_id,
+            total_direct_charts=len(charts),
+            charts=charts
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_direct_charts endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get direct charts: {str(e)}")
+        logger.error(f"Error fetching direct charts: {str(e)}")
+        raise create_error_response(f"Failed to get direct charts: {str(e)}", 500)
 
-@app.get("/dashboard/{project_id}/dashboard-layout", tags=["Dashboard"])
-async def get_dashboard_layout_endpoint(project_id: str, user_id: str):
+
+@app.get("/api/v1/dashboard/{project_id}/layout", tags=["Dashboard"])
+async def get_dashboard_layout_endpoint(
+    project_id: str,
+    user_id: str = Query(...),
+    rows: int = Query(default=2, ge=1, le=10),
+    cols: int = Query(default=3, ge=1, le=6)
+):
     """
-    Get optimized dashboard layout (2x3 grid) with direct charts
+    Get optimized dashboard layout with direct charts
     
-    Args:
-        project_id: Project identifier
-        user_id: User identifier (query parameter)
+    - **project_id**: Project identifier
+    - **user_id**: User identifier
+    - **rows**: Number of rows in grid (default: 2)
+    - **cols**: Number of columns in grid (default: 3)
+    
+    Returns charts organized in grid layout
     """
     try:
-        logger.info(f"Getting dashboard layout for project_id: {project_id}, user_id: {user_id}")
+        logger.info(f"Creating layout: project={project_id}, grid={rows}x{cols}")
         
-        if not user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
-        
-        # Get direct charts
         charts = get_direct_charts(user_id, project_id)
         
-        # Organize charts into 2x3 grid (6 slots)
+        # Organize charts into grid
         grid_layout = []
-        for i in range(0, len(charts), 3):
-            row = charts[i:i+3]
-            # Pad row if needed (for less than 3 charts in last row)
-            while len(row) < 3:
+        max_charts = rows * cols
+        
+        for i in range(0, len(charts[:max_charts]), cols):
+            row = charts[i:i+cols]
+            # Pad row if needed
+            while len(row) < cols:
                 row.append(None)
             grid_layout.append(row)
         
-        # Ensure we have exactly 2 rows (pad with None if needed)
-        while len(grid_layout) < 2:
-            grid_layout.append([None, None, None])
+        # Pad rows if needed
+        while len(grid_layout) < rows:
+            grid_layout.append([None] * cols)
         
-        # Limit to 2 rows
-        grid_layout = grid_layout[:2]
-        
-        logger.info(f"Created dashboard layout for project {project_id} with {len(charts)} charts")
-        return {
-            "status": "success",
-            "project_id": project_id,
-            "total_charts": len(charts),
-            "grid_layout": grid_layout,
-            "charts": charts
-        }
+        logger.info(f"Layout created: {len(charts)} charts, {rows}x{cols} grid")
+        return create_success_response(
+            message="Dashboard layout created",
+            project_id=project_id,
+            total_charts=len(charts),
+            grid_config={"rows": rows, "cols": cols},
+            grid_layout=grid_layout,
+            charts=charts[:max_charts]
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in get_dashboard_layout endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get dashboard layout: {str(e)}")
+        logger.error(f"Error creating layout: {str(e)}")
+        raise create_error_response(f"Failed to create layout: {str(e)}", 500)
+
+
+# ============================================================================
+# Health & Monitoring
+# ============================================================================
+
+@app.get("/health", tags=["System"])
+async def health_check():
+    """
+    Health check endpoint for monitoring
+    
+    Returns service status and timestamp
+    """
+    return {
+        "status": "healthy",
+        "service": "PulseBoard.ai API",
+        "version": "2.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
+    }
+
+
+@app.get("/", tags=["System"])
+async def root():
+    """
+    API root endpoint
+    
+    Returns API information and documentation links
+    """
+    return {
+        "service": "PulseBoard.ai API",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "health": "/health"
+    }
+
 
 # ============================================================================
 # Application Entry Point
@@ -802,4 +897,10 @@ async def get_dashboard_layout_endpoint(project_id: str, user_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        access_log=True
+    )
