@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from bson import ObjectId
+import json
 import sys
 import io
 import pandas as pd
@@ -874,3 +875,338 @@ def get_project_upload_status(
         "collection_name": collection_name,
         "columns": columns
     }
+
+class JSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle ObjectId"""
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, datetime):
+            return obj.isoformat() + "Z"
+        return super().default(obj)
+
+def get_project_charts(user_id: str, project_id: str) -> List[Dict[str, Any]]:
+    """
+    Get all charts for a specific project
+    
+    Args:
+        user_id: The user's unique identifier
+        project_id: The project's unique identifier
+        
+    Returns:
+        List of chart dictionaries
+        
+    Raises:
+        HTTPException: If database error occurs or project not found
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # First, verify the user has access to this project
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Find user's client config
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        
+        if not client_config or "projects" not in client_config:
+            logger.info(f"No projects found for user_id: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
+        
+        # Check if the project exists in user's projects
+        user_projects = client_config.get("projects", [])
+        project_exists = any(
+            p.get("project_id") == project_id 
+            for p in user_projects
+        )
+        
+        if not project_exists:
+            logger.info(f"Project {project_id} not found for user {user_id}")
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Construct collection name for project data
+        collection_name = f"{project_id}_cleaned_data"
+        
+        # Access the project database (using user_id as db name)
+        project_db = mongo_client[user_id]
+        
+        # Check if collection exists
+        if collection_name not in project_db.list_collection_names():
+            logger.info(f"No data found for project {project_id} in database {user_id}")
+            raise HTTPException(status_code=404, detail=f"No charts found for project {project_id}")
+        
+        # Get charts from collection
+        charts_collection = project_db[collection_name]
+        
+        # Get all charts, sorted by chart_id or creation order
+        charts = list(charts_collection.find({}).sort("chart_id", 1))
+        
+        # Convert ObjectId to string for JSON serialization
+        for chart in charts:
+            chart['_id'] = str(chart['_id'])
+            chart['chart_id'] = str(chart['chart_id'])
+            
+            # Convert any nested ObjectIds
+            if 'data' in chart and isinstance(chart['data'], list):
+                for item in chart['data']:
+                    if isinstance(item, dict) and '_id' in item:
+                        if isinstance(item['_id'], ObjectId):
+                            item['_id'] = str(item['_id'])
+        
+        logger.info(f"Retrieved {len(charts)} charts for project {project_id}, user {user_id}")
+        return charts
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving project charts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve project charts: {str(e)}")
+
+def get_specific_chart(user_id: str, project_id: str, chart_id: str) -> Dict[str, Any]:
+    """
+    Get a specific chart by chart_id
+    
+    Args:
+        user_id: The user's unique identifier
+        project_id: The project's unique identifier
+        chart_id: The chart's unique identifier
+        
+    Returns:
+        Chart dictionary
+        
+    Raises:
+        HTTPException: If database error occurs or chart not found
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # First, verify the user has access to this project
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Find user's client config
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        
+        if not client_config or "projects" not in client_config:
+            logger.info(f"No projects found for user_id: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
+        
+        # Check if the project exists in user's projects
+        user_projects = client_config.get("projects", [])
+        project_exists = any(
+            p.get("project_id") == project_id 
+            for p in user_projects
+        )
+        
+        if not project_exists:
+            logger.info(f"Project {project_id} not found for user {user_id}")
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Construct collection name for project data
+        collection_name = f"{project_id}_cleaned_data"
+        
+        # Access the project database (using user_id as db name)
+        project_db = mongo_client[user_id]
+        
+        # Check if collection exists
+        if collection_name not in project_db.list_collection_names():
+            logger.info(f"No data found for project {project_id} in database {user_id}")
+            raise HTTPException(status_code=404, detail=f"No charts found for project {project_id}")
+        
+        # Get specific chart
+        charts_collection = project_db[collection_name]
+        
+        # Convert chart_id string to ObjectId if it's a valid ObjectId
+        try:
+            chart_object_id = ObjectId(chart_id)
+            chart = charts_collection.find_one({"chart_id": chart_object_id})
+        except:
+            # If chart_id is not a valid ObjectId, try searching as string
+            chart = charts_collection.find_one({"chart_id": chart_id})
+        
+        if not chart:
+            logger.info(f"Chart {chart_id} not found in project {project_id}")
+            raise HTTPException(status_code=404, detail=f"Chart {chart_id} not found")
+        
+        # Convert ObjectId to string
+        chart['_id'] = str(chart['_id'])
+        chart['chart_id'] = str(chart['chart_id'])
+        
+        # Convert any nested ObjectIds
+        if 'data' in chart and isinstance(chart['data'], list):
+            for item in chart['data']:
+                if isinstance(item, dict) and '_id' in item:
+                    if isinstance(item['_id'], ObjectId):
+                        item['_id'] = str(item['_id'])
+        
+        logger.info(f"Retrieved chart {chart_id} for project {project_id}, user {user_id}")
+        return chart
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving specific chart: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve chart: {str(e)}")
+
+def get_chart_types(user_id: str, project_id: str) -> List[Dict[str, Any]]:
+    """
+    Get all chart types available in the project
+    
+    Args:
+        user_id: The user's unique identifier
+        project_id: The project's unique identifier
+        
+    Returns:
+        List of chart type dictionaries with counts
+        
+    Raises:
+        HTTPException: If database error occurs
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # First, verify the user has access to this project
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Find user's client config
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        
+        if not client_config or "projects" not in client_config:
+            logger.info(f"No projects found for user_id: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
+        
+        # Check if the project exists in user's projects
+        user_projects = client_config.get("projects", [])
+        project_exists = any(
+            p.get("project_id") == project_id 
+            for p in user_projects
+        )
+        
+        if not project_exists:
+            logger.info(f"Project {project_id} not found for user {user_id}")
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Construct collection name for project data
+        collection_name = f"{project_id}_cleaned_data"
+        
+        # Access the project database (using user_id as db name)
+        project_db = mongo_client[user_id]
+        
+        # Check if collection exists
+        if collection_name not in project_db.list_collection_names():
+            logger.info(f"No data found for project {project_id} in database {user_id}")
+            return []
+        
+        # Get distinct chart types
+        charts_collection = project_db[collection_name]
+        chart_types = charts_collection.distinct("chart_type")
+        
+        # Get chart count by type
+        chart_counts = []
+        for chart_type in chart_types:
+            count = charts_collection.count_documents({"chart_type": chart_type})
+            chart_counts.append({
+                "type": chart_type,
+                "count": count
+            })
+        
+        logger.info(f"Retrieved {len(chart_counts)} chart types for project {project_id}, user {user_id}")
+        return chart_counts
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving chart types: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve chart types: {str(e)}")
+
+def get_direct_charts(user_id: str, project_id: str) -> List[Dict[str, Any]]:
+    """
+    Get only charts with display_mode = "direct" for dashboard display
+    
+    Args:
+        user_id: The user's unique identifier
+        project_id: The project's unique identifier
+        
+    Returns:
+        List of chart dictionaries with display_mode = "direct"
+        
+    Raises:
+        HTTPException: If database error occurs
+    """
+    try:
+        # Connect to MongoDB
+        mongo_client = connect_to_mongodb()
+        if not mongo_client:
+            logger.error("Failed to connect to MongoDB")
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        # First, verify the user has access to this project
+        master_db = mongo_client["master"]
+        client_config_collection = master_db["client_config"]
+        
+        # Find user's client config
+        client_config = client_config_collection.find_one({"user_id": user_id})
+        
+        if not client_config or "projects" not in client_config:
+            logger.info(f"No projects found for user_id: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found or has no projects")
+        
+        # Check if the project exists in user's projects
+        user_projects = client_config.get("projects", [])
+        project_exists = any(
+            p.get("project_id") == project_id 
+            for p in user_projects
+        )
+        
+        if not project_exists:
+            logger.info(f"Project {project_id} not found for user {user_id}")
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Construct collection name for project data
+        collection_name = f"{project_id}_cleaned_data"
+        
+        # Access the project database (using user_id as db name)
+        project_db = mongo_client[user_id]
+        
+        # Check if collection exists
+        if collection_name not in project_db.list_collection_names():
+            logger.info(f"No data found for project {project_id} in database {user_id}")
+            return []
+        
+        # Get only charts with display_mode = "direct"
+        charts_collection = project_db[collection_name]
+        charts = list(charts_collection.find({"display_mode": "direct"}).sort("chart_id", 1))
+        
+        # Convert ObjectId to string for JSON serialization
+        for chart in charts:
+            chart['_id'] = str(chart['_id'])
+            chart['chart_id'] = str(chart['chart_id'])
+            
+            # Convert any nested ObjectIds
+            if 'data' in chart and isinstance(chart['data'], list):
+                for item in chart['data']:
+                    if isinstance(item, dict) and '_id' in item:
+                        if isinstance(item['_id'], ObjectId):
+                            item['_id'] = str(item['_id'])
+        
+        logger.info(f"Retrieved {len(charts)} direct charts for project {project_id}, user {user_id}")
+        return charts
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving direct charts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve direct charts: {str(e)}")

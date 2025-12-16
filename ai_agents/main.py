@@ -35,7 +35,11 @@ from ai_agents.api.dashboard_apis import (
     get_user_projects_count,
     upload_data_to_project,
     get_project_upload_status,
-    delete_project
+    delete_project,
+    get_project_charts,
+    get_specific_chart,
+    get_chart_types,
+    get_direct_charts
 )
 
 logger = get_logger(__name__)
@@ -618,6 +622,179 @@ async def health_check():
         "service": "PulseBoard.ai API"
     }
 
+@app.get("/dashboard/{project_id}/charts", tags=["Dashboard"])
+async def get_project_charts_endpoint(project_id: str, user_id: str):
+    """
+    Get all charts for a specific project
+    
+    Args:
+        project_id: Project identifier
+        user_id: User identifier (query parameter)
+    """
+    try:
+        logger.info(f"Getting charts for project_id: {project_id}, user_id: {user_id}")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        charts = get_project_charts(user_id, project_id)
+        
+        logger.info(f"Retrieved {len(charts)} charts for project {project_id}")
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "total_charts": len(charts),
+            "charts": charts
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_project_charts endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get project charts: {str(e)}")
+
+@app.get("/dashboard/{project_id}/chart/{chart_id}", tags=["Dashboard"])
+async def get_specific_chart_endpoint(project_id: str, chart_id: str, user_id: str):
+    """
+    Get a specific chart by chart_id
+    
+    Args:
+        project_id: Project identifier
+        chart_id: Chart identifier
+        user_id: User identifier (query parameter)
+    """
+    try:
+        logger.info(f"Getting chart {chart_id} for project_id: {project_id}, user_id: {user_id}")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        chart = get_specific_chart(user_id, project_id, chart_id)
+        
+        logger.info(f"Retrieved chart {chart_id} for project {project_id}")
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "chart_id": chart_id,
+            "chart": chart
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_specific_chart endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get chart: {str(e)}")
+
+@app.get("/dashboard/{project_id}/chart-types", tags=["Dashboard"])
+async def get_chart_types_endpoint(project_id: str, user_id: str):
+    """
+    Get all chart types available in the project
+    
+    Args:
+        project_id: Project identifier
+        user_id: User identifier (query parameter)
+    """
+    try:
+        logger.info(f"Getting chart types for project_id: {project_id}, user_id: {user_id}")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        chart_types = get_chart_types(user_id, project_id)
+        
+        logger.info(f"Retrieved {len(chart_types)} chart types for project {project_id}")
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "total_types": len(chart_types),
+            "chart_types": chart_types
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_chart_types endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get chart types: {str(e)}")
+
+@app.get("/dashboard/{project_id}/direct-charts", tags=["Dashboard"])
+async def get_direct_charts_endpoint(project_id: str, user_id: str):
+    """
+    Get only charts with display_mode = "direct" for dashboard display
+    
+    Args:
+        project_id: Project identifier
+        user_id: User identifier (query parameter)
+    """
+    try:
+        logger.info(f"Getting direct charts for project_id: {project_id}, user_id: {user_id}")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        charts = get_direct_charts(user_id, project_id)
+        
+        logger.info(f"Retrieved {len(charts)} direct charts for project {project_id}")
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "total_direct_charts": len(charts),
+            "charts": charts
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_direct_charts endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get direct charts: {str(e)}")
+
+@app.get("/dashboard/{project_id}/dashboard-layout", tags=["Dashboard"])
+async def get_dashboard_layout_endpoint(project_id: str, user_id: str):
+    """
+    Get optimized dashboard layout (2x3 grid) with direct charts
+    
+    Args:
+        project_id: Project identifier
+        user_id: User identifier (query parameter)
+    """
+    try:
+        logger.info(f"Getting dashboard layout for project_id: {project_id}, user_id: {user_id}")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        # Get direct charts
+        charts = get_direct_charts(user_id, project_id)
+        
+        # Organize charts into 2x3 grid (6 slots)
+        grid_layout = []
+        for i in range(0, len(charts), 3):
+            row = charts[i:i+3]
+            # Pad row if needed (for less than 3 charts in last row)
+            while len(row) < 3:
+                row.append(None)
+            grid_layout.append(row)
+        
+        # Ensure we have exactly 2 rows (pad with None if needed)
+        while len(grid_layout) < 2:
+            grid_layout.append([None, None, None])
+        
+        # Limit to 2 rows
+        grid_layout = grid_layout[:2]
+        
+        logger.info(f"Created dashboard layout for project {project_id} with {len(charts)} charts")
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "total_charts": len(charts),
+            "grid_layout": grid_layout,
+            "charts": charts
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_layout endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get dashboard layout: {str(e)}")
 
 # ============================================================================
 # Application Entry Point
